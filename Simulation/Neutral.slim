@@ -1,0 +1,40 @@
+// set up a simple neutral simulation for QTL
+initialize() {
+	// Initialize global variable to avoid repetition
+	defineGlobal("N", 1000); // population size
+	defineGlobal("L", 1e7); // genome size (10m pb)
+	defineGlobal("MU", 1e-7); //mutation rate for neutral
+	defineGlobal("R", 1/L); // Recombination rate : ensure 1 event per birth (1/genome Size)
+	defineGlobal("subpopCount", 8); // total sub population
+	
+	// Initialize 
+	initializeMutationType("m1", 0.5, "f", 0.0); // neutral mutation (type m1)
+	initializeMutationType("m2", 0.5, "f", 0.0); // QTLs;
+	initializeGenomicElementType("g1", m1, 1.0); // create a genomic element name g1, 
+	initializeGenomicElement(g1, 0, L); // large genome : 10 million pb
+	initializeMutationRate(MU); // mutation rate for neutral simulation
+	initializeRecombinationRate(R); // Initialize Recombination rate
+
+	
+}
+
+// create island model of 8 subpopulations with 1000 individuals
+1 early() {
+	//subpopCount = 8;
+	for (i in 1:subpopCount)
+		sim.addSubpop(i,1000);
+	for (i in 1:subpopCount)
+		for (j in 1:subpopCount)
+			if (i !=j)
+				sim.subpopulations[i-1].setMigrationRates(j, 0.05);
+	
+}
+
+// output samples of 10 genomes periodically, all fixed mutations at end
+2000 late() { 
+
+			for (i in 1:subpopCount){
+				g = sim.subpopulations[i-1].sampleIndividuals(1000).genomes;
+				g.outputVCF(paste0("pop",i,".vcf"));
+			}
+}
