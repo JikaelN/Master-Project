@@ -9,7 +9,6 @@ initialize() {
 	
 	// Initialize 
 	initializeMutationType("m1", 0.5, "f", 0.0); // neutral mutation (type m1)
-	initializeMutationType("m2", 0.5, "f", 0.0); // QTLs;
 	initializeGenomicElementType("g1", m1, 1.0); // create a genomic element name g1, 
 	initializeGenomicElement(g1, 0, L); // large genome : 10 million pb
 	initializeMutationRate(MU); // mutation rate for neutral simulation
@@ -30,7 +29,7 @@ initialize() {
 	
 }
 
-// output samples of 10 genomes periodically, all fixed mutations at end
+// output genomes samples of all our populations 
 2000 late() { 
 
 			for (i in 1:subpopCount){
