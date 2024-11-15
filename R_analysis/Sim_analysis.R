@@ -6,13 +6,12 @@ if (!require("vcfR")) {
   library(vcfR)
 }
 setwd("C:/Users/User/Desktop/Master project/R_analysis")
-## reproducibility
-set.seed(123)
+
 #### Custom methods
 convert_genotype <- function(genotype) {
-  alleles <- strsplit(genotype,  "\\|")
+  alleles <- strsplit(genotype, "\\|")
   alleles <- lapply(alleles, as.numeric)
-  return(unlist(lapply(alleles,sum)))
+  return(sum(unlist(alleles)))
 }
 
 
@@ -32,36 +31,47 @@ data <- data.frame(
 # Import files
 files <- list.files(path = "./data", pattern = "\\.vcf", full.names = T)
 
-# import and read all the data
+# import and read all the data (convert it to long-table for faster calculation)
 data_list <- list()
 
 for (file in files){
-  data <- read.vcfR(file)
+  data <- vcfR2tidy(read.vcfR(file))
   data_list[[file]] <- data
 }
 
+# Common loci list
+# Extract loci from each long-table format data
+loci_list <- lapply(data_list, function(data) unique(data$gt["POS"]))
+flat_loci_list <- unlist(loci_list, recursive = FALSE)
+common_loci <- Reduce(intersect, flat_loci_list)
 
-### Extract data for all the population
-## Sample 1000 loci for the first vcf file
-vcf_pop1 <- extract.gt(data_list[[1]])
 
-# Ensure the sampled loci are valid for all VCF files
-common_loci <- Reduce(intersect, lapply(data_list, function(vcf) rownames(extract.gt(vcf))))
 
-#extract 1000, 100, 10 ,1 
-sampled_loci <- sample(common_loci, 1000, replace = FALSE)
-# Sample the same loci for each VCF
-vcf_list <- list()
-for(i in seq(1, length(data_list), by=1)) {
-  data <- data_list[[i]]
-  vcf_pop <- extract.gt(data)
+# Get all the genomic data with common loci for all the 8 population
+list_data_filtered <- list()
+for (i in seq(1, length(data_list))){
+  data <- data_list[[i]]$gt
+  d_filtered <- data[data$POS %in% common_loci,]
+  list_data_filtered[[i]] <- d_filtered
   
-  ## get the same loci for all the population
-
-  sampled_data <- vcf_pop[common_loci, ]
-  vcf_list[[i]] <- sampled_data
 }
-#vcf_list[[1]]
+list_data_filtered
+
+## Convert genetic data into numeric
+genotype_numeric <- lapply(data_list, function(data) {
+  data$gt$gt_numeric <- sapply(data$gt$gt_GT, convert_genotype)
+  return(data)
+})
+
+
+#head(genotype_numeric[[1]]$gt)
+
+
+
+### TO CHANGE from
+#extract 1000, 100, 10 ,1 
+
+# Sample the same loci for each VCF
 
 
 # Row are the loci and column are the individuals
@@ -69,21 +79,17 @@ for(i in seq(1, length(data_list), by=1)) {
 # exemple individual 1 has two allele 1 with effect size 1.5. : (1 + 1) * 1.5 = 1 * 1.5 + 1 * 1.5 = 3
 #Convert genotype into numeric sum them by individuals
 #Bonus convert all the data into dataframe make the calculation way faster
-genotype_numeric <- list()
-for(i in seq(1, length(vcf_list))){
-  data <- as.data.frame(vcf_list[[i]])
-  
-  genotype_numeric[[i]] <- as.data.frame(lapply(data[, -1], convert_genotype))
-  
-}
 
-# Sample 100, 10, 1
+
+# Sample 1000, 100, 10, 1
 # To ensure we will have the same row for each population
+sampled_indices_1000 <- sample(seq_len(nrow(genotype_numeric[[1]])), 1000, replace = FALSE)
 sampled_indices_100 <- sample(seq_len(nrow(genotype_numeric[[1]])), 100, replace = FALSE)
 sampled_indices_10 <- sample(seq_len(nrow(genotype_numeric[[1]])), 10, replace = FALSE)
 sampled_indices_1 <- sample(seq_len(nrow(genotype_numeric[[1]])), 1, replace = FALSE)
 
 # Sample for each population
+
 sampled_phenotype_100 <- list()
 sampled_phenotype_10 <- list()
 sampled_phenotype_1 <- list()
@@ -94,7 +100,8 @@ for (i in seq(1, length(genotype_numeric))){
   sampled_phenotype_1[[i]] <- genotype_numeric[[i]][sampled_indices_1, ]
 }
 
-
+## reproducibility
+set.seed(123)
 
 # Normal distribution of effect size based on all the loci
 effects <- rnorm(nrow(genotype_numeric[[1]]), mean = 0, sd = 1)
