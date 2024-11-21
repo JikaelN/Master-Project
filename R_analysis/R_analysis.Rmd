@@ -1,0 +1,470 @@
+---
+title: "R_analysis"
+author: "Jikaël Ntoko"
+date: "2024-11-19"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Library
+Used : vcfR, dplyr, tidyr
+``` {r}
+if (!require("vcfR")) {
+  install.packages("vcfR")
+  library(vcfR)
+}
+if (!require("dplyr")) {
+  install.packages("dplyr")
+  library(dplyr)
+}
+if (!require("tidyr")) {
+  install.packages("tidyr")
+  library(tidyr)
+}
+```
+### Working directory, reproducibility
+```{r}
+set.seed(123) #Reproducibility
+setwd("C:/Users/User/Desktop/Master project/R_analysis")
+```
+###Custom methods
+```{r}
+### Convert str genotype to numeric genotype
+convert_genotype <- function(genotype) {
+  alleles <- strsplit(genotype, "\\|")
+  alleles <- lapply(alleles, as.numeric)
+  return(sum(unlist(alleles)))
+}
+
+### Sample loci
+sample_loci <- function(data, n_values) {
+  data %>%
+    group_by(Indiv) %>%
+    summarise(
+      samples = list(lapply(n_values, function(n) sample(gt_numeric, size = min(n, n()), replace = FALSE)))
+    ) %>%
+    unnest_wider(samples, names_sep = "_") %>%
+    pivot_longer(
+      cols = starts_with("samples_"),
+      names_to = "Sample_Size",
+      values_to = "gt_numeric_values"
+    ) %>%
+    unnest(gt_numeric_values)
+}
+```
+### Process directories
+```{r}
+main_directory <- "./data/neutral/"
+
+#list all directories
+all_directories <- list.dirs(path= main_directory, full.names = TRUE)
+```
+### Processing vcf files and saving them by replicate
+Process all vcf files, transform info into long-table and store them into a list classed by replicate
+```{r}
+all_data_list <- list()
+for (directory in all_directories){
+  if (directory != main_directory){
+  files <- list.files(path = directory, pattern = "\\.vcf", full.names = T)
+  data_list <- list()
+  for (file in files) {
+    data <- vcfR2tidy(read.vcfR(file))
+    data_list[[basename(file)]] <- data
+  
+  }
+  all_data_list[[basename(directory)]] <- data_list
+  }
+}
+```
+Transform the data into dataframe
+```{r}
+# Initialize the final list to store data by replicate
+final_population_list <- list()
+
+# Loop through each replicate in all_data_list
+for (replicate_name in names(all_data_list)) {
+  replicate_data <- all_data_list[[replicate_name]]  # Access replicate
+  
+  # Initialize a list to store data frames for each population (file) in this replicate
+  population_data <- list()
+  
+  # Loop through each file in the replicate
+  for (file_name in names(replicate_data)) {
+    file_data <- replicate_data[[file_name]]  # Access file data
+    
+    # Extract `gt` data
+    gt_data <- file_data$gt  # Access the gt list containing genotype data
+    
+    # Pivot data manually to create a wide-format data frame
+    # Rows are positions (POS), columns are individuals (Indiv)
+    gt_wide <- data.frame(POS = unique(gt_data$POS))
+    
+    # Loop through each individual and add their genotype (gt_GT) as a column
+    for (indiv in unique(gt_data$Indiv)) {
+      # Filter rows for the current individual
+      indiv_data <- gt_data[gt_data$Indiv == indiv, ]
+      
+      # Add a new column for the individual's data
+      gt_wide[[indiv]] <- indiv_data[match(gt_wide$POS, indiv_data$POS), "gt_GT"]
+    }
+    
+    # Store the wide data frame for this population (file)
+    population_data[[file_name]] <- gt_wide
+  }
+  
+  # Store the population data for this replicate
+  final_population_list[[replicate_name]] <- population_data
+}
+
+```
+
+For each replicate find the common loci
+```{r}
+common_loci_list <- list()
+
+for (replicate_name in names(all_data_list)) {
+  data_list <- all_data_list[[replicate_name]]  # Access populations (files) in the replicate
+  
+  # Extract loci (POS) from each population
+  loci_list <- lapply(data_list, function(data) unique(data$gt$POS))
+  
+  # Find common loci across all populations in the replicate
+  common_loci <- Reduce(intersect, loci_list)  # Intersection of all loci
+  
+  # Store the common loci for this replicate
+  common_loci_list[[replicate_name]] <- common_loci
+}
+
+# Inspect the results
+str(common_loci_list)
+
+```
+Get all the genomic data with common loci for all the 8 populations in all the replicate
+```{r}
+# Initialize a list to store filtered and numeric data by replicate
+genomic_numeric_data_list <- list()
+
+# Loop through each replicate
+for (replicate in seq_along(all_data_list)) {
+  # Access the data list for the current replicate
+  data_list <- all_data_list[[replicate]]
+  common_loci <- common_loci_list[[replicate]]  # Common loci for this replicate
+  
+  # Initialize a list to store data for each population (file) in the replicate
+  replicate_numeric_data <- list()
+  
+  # Process each file in the replicate
+  for (file_name in names(data_list)) {
+    # Access the genomic data for the current file
+    file_data <- data_list[[file_name]]$gt
+    
+    # Filter data based on common loci
+    filtered_data <- file_data[file_data$POS %in% common_loci, ]
+    
+    # Check if filtered data is non-empty
+    if (nrow(filtered_data) > 0) {
+      # Convert `gt_GT` to numeric using the provided `convert_genotype` function
+      filtered_data$gt_numeric <- sapply(filtered_data$gt_GT, convert_genotype)
+      
+      # Add filtered data with numeric genotype to the list
+      replicate_numeric_data[[file_name]] <- filtered_data
+    } else {
+      print(paste("No matching loci for file:", file_name))
+    }
+  }
+  
+  # Store the processed data for this replicate
+  genomic_numeric_data_list[[paste("replicate", replicate, sep = "_")]] <- replicate_numeric_data
+}
+
+```
+Add effect size
+```{r}
+# Parameters for effect size distribution
+effect_mean <- 0  # Mean of the normal distribution
+effect_sd <- 1    # Standard deviation of the normal distribution
+
+# Initialize a list to store processed data by replicate
+genomic_effect_data_list <- list()
+
+# Loop through each replicate
+for (replicate in seq_along(all_data_list)) {
+  # Access the data list for the current replicate
+  data_list <- all_data_list[[replicate]]
+  common_loci <- common_loci_list[[replicate]]  # Common loci for this replicate
+  
+  # Initialize a list to store data for each population (file) in the replicate
+  replicate_effect_data <- list()
+  
+  # Process each file in the replicate
+  for (file_name in names(data_list)) {
+    # Access the genomic data for the current file
+    file_data <- data_list[[file_name]]$gt
+    
+    # Filter data based on common loci
+    filtered_data <- file_data[file_data$POS %in% common_loci, ]
+    
+    # Check if filtered data is non-empty
+    if (nrow(filtered_data) > 0) {
+      # Convert `gt_GT` to numeric using the provided `convert_genotype` function
+      filtered_data$gt_numeric <- sapply(filtered_data$gt_GT, convert_genotype)
+      
+      # Add an `effect_size` column drawn from a normal distribution
+      filtered_data$effect_size <- rnorm(
+        nrow(filtered_data), 
+        mean = effect_mean, 
+        sd = effect_sd
+      )
+      
+      # Compute the phenotype (gt_numeric * effect_size)
+      filtered_data$phenotype <- filtered_data$gt_numeric * filtered_data$effect_size
+      
+      # Add the processed data to the replicate list
+      replicate_effect_data[[file_name]] <- filtered_data
+    } else {
+      print(paste("No matching loci for file:", file_name))
+    }
+  }
+  
+  # Store the processed data for this replicate
+  genomic_effect_data_list[[paste("replicate", replicate, sep = "_")]] <- replicate_effect_data
+}
+
+
+```
+
+Extract 1000, 100, 10, 1 loci for each replicate (10 times)
+```{r}
+# Parameters
+sample_sizes <- c(1, 10, 100, 1000)  # Sample sizes
+num_replicates <- 10  # Number of replications
+
+# Initialize a list to store individual-level phenotype results
+individual_phenotype_results <- list()
+
+# Perform 10 replications
+for (replication in seq_len(num_replicates)) {
+  # Initialize a list to store results for this replication
+  replication_results <- list()
+  
+  # Loop through each replicate
+  for (replicate_name in names(genomic_effect_data_list)) {
+    # Access the populations (files) for this replicate
+    replicate_data <- genomic_effect_data_list[[replicate_name]]
+    
+    # Get all unique positions (POS) for the replicate (common across all populations)
+    all_positions <- unique(do.call(rbind, lapply(replicate_data, function(file_data) file_data$POS)))
+    
+    # Initialize a list to store individual phenotypes for each sample size
+    sample_results <- list()
+    
+    # Loop through each sample size
+    for (sample_size in sample_sizes) {
+      # Sample positions
+      sampled_positions <- sample(all_positions, size = min(sample_size, length(all_positions)), replace = FALSE)
+      
+      # Initialize a list to store phenotypes for each population
+      population_results <- list()
+      
+      # Loop through each population
+      for (file_name in names(replicate_data)) {
+        file_data <- replicate_data[[file_name]]
+        
+        # Filter the file data for the sampled positions
+        sampled_data <- file_data[file_data$POS %in% sampled_positions, ]
+        
+        # Calculate the phenotype for each individual
+        individual_phenotypes <- sampled_data[, c("Indiv", "phenotype"), drop = FALSE]
+        
+        # Store the individual-level phenotypes
+        population_results[[file_name]] <- individual_phenotypes
+      }
+      
+      # Store the population-level results for this sample size
+      sample_results[[paste("sample", sample_size, sep = "_")]] <- population_results
+    }
+    
+    # Store the results for this replicate
+    replication_results[[replicate_name]] <- sample_results
+  }
+  
+  # Store the results for this replication
+  individual_phenotype_results[[paste("replication", replication, sep = "_")]] <- replication_results
+}
+
+
+
+```
+### QST calculation
+based on Qst = between-populations variance / (between population variance + 2 (diploid) * within-population variance (average across populations))
+```{r}
+# Initialize lists to store Qst results for each sample size
+qst_sample_results <- list(
+  sample_1 = list(),
+  sample_10 = list(),
+  sample_100 = list(),
+  sample_1000 = list()
+)
+
+# Loop through each replication
+for (replication_name in names(individual_phenotype_results)) {
+  replication_data <- individual_phenotype_results[[replication_name]]  # Access replication data
+  
+  # Loop through each replicate
+  for (replicate_name in names(replication_data)) {
+    replicate_data <- replication_data[[replicate_name]]  # Access replicate data
+    
+    # Loop through each sample size
+    for (sample_size in names(replicate_data)) {
+      sample_data <- replicate_data[[sample_size]]  # Access sample data
+      
+      # Combine individual-level phenotypes across populations
+      all_population_data <- do.call(rbind, lapply(sample_data, function(population_data) {
+        population_data  # Data frame with Indiv and phenotype columns
+      }))
+      
+      # Add population identifiers to the combined data
+      all_population_data$population <- rep(names(sample_data), 
+                                            sapply(sample_data, nrow))
+      
+      # Calculate between-population variance (Var_B)
+      population_means <- aggregate(phenotype ~ population, data = all_population_data, FUN = mean)
+      var_b <- var(population_means$phenotype, na.rm = TRUE)
+      
+      # Calculate within-population variance (Var_W)
+      var_w <- mean(unlist(lapply(split(all_population_data, all_population_data$population), function(pop_data) {
+        var(pop_data$phenotype, na.rm = TRUE)
+      })))
+      
+      # Calculate Qst
+      if (!is.na(var_b) && !is.na(var_w) && !(var_b == 0 && var_w == 0)) {
+        qst <- var_b / (var_b + 2 * var_w)
+      } else {
+        qst <- NA  # Invalid variance values
+      }
+      
+      # Store Qst in the appropriate sample size list
+      qst_sample_results[[sample_size]][[replication_name]][[replicate_name]] <- qst
+    }
+  }
+}
+
+```
+
+#### Visualization part
+First: boxplot of Qst across all replicate by sample size for each replication we did
+```{r}
+library(ggplot2)
+
+# Combine Qst results into a single data frame for plotting
+plot_data <- data.frame(
+  Sample = character(),
+  Replication = character(),
+  Qst = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop through each sample size
+for (sample_size in names(qst_sample_results)) {
+  sample_data <- qst_sample_results[[sample_size]]
+  
+  # Loop through each replication
+  for (replication_name in names(sample_data)) {
+    replication_data <- sample_data[[replication_name]]
+    
+    # Combine replicate Qst values
+    for (replicate_name in names(replication_data)) {
+      qst_value <- replication_data[[replicate_name]]
+      
+      # Append to plot_data
+      plot_data <- rbind(
+        plot_data,
+        data.frame(
+          Sample = sample_size,
+          Replication = replication_name,
+          Qst = qst_value
+        )
+      )
+    }
+  }
+}
+
+# Ensure Sample is treated as a factor
+plot_data$Sample <- factor(plot_data$Sample, levels = c("sample_1", "sample_10", "sample_100", "sample_1000"))
+
+# Create the boxplot
+ggplot(plot_data, aes(x = Sample, y = Qst, fill = Sample)) +
+  geom_boxplot() +
+  facet_wrap(~ Replication, ncol = 2) +
+  labs(
+    title = "Qst Values Across Replications for Each Sample Size",
+    x = "Sample Size",
+    y = "Qst Value"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+
+Second qqplot of sample 
+```{r}
+library(gridExtra)
+library(ggplot2)
+
+# Initialize a list to store QQ plot data for each replication
+qqplot_data_list <- list()
+
+# Define pairs of sample sizes for QQ plots
+sample_pairs <- list(
+  c("sample_1", "sample_10"),
+  c("sample_1", "sample_100"),
+  c("sample_1", "sample_1000"),
+  c("sample_10", "sample_100"),
+  c("sample_10", "sample_1000"),
+  c("sample_100", "sample_1000")
+)
+
+# Loop through each replication
+for (replication_name in names(qst_sample_results$sample_1)) {
+  # Initialize a list to store QQ plot data for this replication
+  replication_qq_data <- list()
+  
+  # Loop through each pair of sample sizes
+  for (pair in sample_pairs) {
+    sample_1 <- pair[1]
+    sample_2 <- pair[2]
+    
+    # Extract Qst values for the two sample sizes
+    qst_1 <- qst_sample_results[[sample_1]][[replication_name]]
+    qst_2 <- qst_sample_results[[sample_2]][[replication_name]]
+    
+    # Ensure data is aligned by replicate
+    qst_1_values <- unlist(qst_1)
+    qst_2_values <- unlist(qst_2)
+    
+    # Create a data frame for QQ plotting
+    qq_data <- data.frame(
+      Qst_1 = qst_1_values,
+      Qst_2 = qst_2_values
+    )
+    
+    # Create QQ plot
+    qq_plot <- ggplot(qq_data, aes(sample = Qst_1, theoretical = Qst_2)) +
+      stat_qq() +
+      stat_qq_line() +
+      labs(
+        title = paste("QQ Plot:", sample_1, "vs", sample_2, "in", replication_name),
+        x = paste("Theoretical Quantiles (", sample_1, ")", sep = ""),
+        y = paste("Sample Quantiles (", sample_2, ")", sep = "")
+      ) +
+      theme_minimal()
+    
+    # Print each QQ plot individually
+    print(qq_plot)
+  }
+}
+
+```

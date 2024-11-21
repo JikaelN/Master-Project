@@ -5,27 +5,27 @@ if (!require("vcfR")) {
   install.packages("vcfR")
   library(vcfR)
 }
+if (!require("dplyr")) {
+  install.packages("dplyr")
+  library(dplyr)
+}
+if (!require("tidyr")) {
+  install.packages("tidyr")
+  library(tidyr)
+}
+
+## Seed for reproducibility / 
+set.seed(123) #Reproducibility
 setwd("C:/Users/User/Desktop/Master project/R_analysis")
 
 #### Custom methods
+#Convert genotype str to numeric
 convert_genotype <- function(genotype) {
   alleles <- strsplit(genotype, "\\|")
   alleles <- lapply(alleles, as.numeric)
   return(sum(unlist(alleles)))
 }
 
-
-## test function
-data <- data.frame(
-  locus = c("1_1_1", "1_1_2", "1_1_3"),
-  ind1 = c("0|0", "0|1", "1|0"),
-  ind2 = c("0|0", "1|1", "0|1"),
-  ind3 = c("0|1", "0|0", "1|1"),
-  stringsAsFactors = FALSE
-)
-# Test function
-#data_numeric <- as.data.frame(lapply(data[,-1], convert_genotype))
-#data_numeric
 
 ### MAIN##
 # Import files
@@ -55,7 +55,6 @@ for (i in seq(1, length(data_list))){
   list_data_filtered[[i]] <- d_filtered
   
 }
-list_data_filtered
 
 ## Convert genetic data into numeric
 genotype_numeric <- lapply(data_list, function(data) {

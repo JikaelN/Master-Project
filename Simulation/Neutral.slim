@@ -19,9 +19,12 @@ initialize() {
 
 // create island model of 8 subpopulations with 1000 individuals
 1 early() {
+	// save this run's identifier, used to save and restore
+	defineConstant("simID", getSeed());
+	
 	//subpopCount = 8;
 	for (i in 1:subpopCount)
-		sim.addSubpop(i,1000);
+		sim.addSubpop(i,N);
 	for (i in 1:subpopCount)
 		for (j in 1:subpopCount)
 			if (i !=j)
@@ -30,10 +33,10 @@ initialize() {
 }
 
 // output genomes samples of all our populations 
-20 late() { 
+2000 late() { 
 
 			for (i in 1:subpopCount){
 				g = sim.subpopulations[i-1].sampleIndividuals(1000).genomes;
-				g.outputVCF(paste0("pop",i,".vcf"));
+				g.outputVCF(paste0("Seed_",simID, "_pop_",i,".vcf"));
 			}
 }
