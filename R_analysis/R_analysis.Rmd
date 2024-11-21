@@ -411,12 +411,6 @@ ggplot(plot_data, aes(x = Sample, y = Qst, fill = Sample)) +
 
 Second qqplot of sample 
 ```{r}
-library(gridExtra)
-library(ggplot2)
-
-# Initialize a list to store QQ plot data for each replication
-qqplot_data_list <- list()
-
 # Define pairs of sample sizes for QQ plots
 sample_pairs <- list(
   c("sample_1", "sample_10"),
@@ -427,11 +421,17 @@ sample_pairs <- list(
   c("sample_100", "sample_1000")
 )
 
+# Directory to save plots
+output_dir <- "qqplots"  # Change to your desired directory
+dir.create(output_dir, showWarnings = FALSE)
+
+# Function to extract the numeric sample size from the name
+extract_sample_size <- function(sample_name) {
+  as.numeric(gsub("sample_", "", sample_name))
+}
+
 # Loop through each replication
 for (replication_name in names(qst_sample_results$sample_1)) {
-  # Initialize a list to store QQ plot data for this replication
-  replication_qq_data <- list()
-  
   # Loop through each pair of sample sizes
   for (pair in sample_pairs) {
     sample_1 <- pair[1]
@@ -451,20 +451,95 @@ for (replication_name in names(qst_sample_results$sample_1)) {
       Qst_2 = qst_2_values
     )
     
+    # Extract numeric sample sizes for legends
+    loci_1 <- extract_sample_size(sample_1)
+    loci_2 <- extract_sample_size(sample_2)
+    
     # Create QQ plot
     qq_plot <- ggplot(qq_data, aes(sample = Qst_1, theoretical = Qst_2)) +
       stat_qq() +
       stat_qq_line() +
       labs(
-        title = paste("QQ Plot:", sample_1, "vs", sample_2, "in", replication_name),
-        x = paste("Theoretical Quantiles (", sample_1, ")", sep = ""),
-        y = paste("Sample Quantiles (", sample_2, ")", sep = "")
+        title = paste("QQ Plot:", loci_1, "vs", loci_2, "Loci in", replication_name),
+        x = paste("Number of Loci:", loci_1),
+        y = paste("Number of Loci:", loci_2)
       ) +
       theme_minimal()
     
-    # Print each QQ plot individually
-    print(qq_plot)
+    # Construct file name
+    file_name <- paste0(output_dir, "/", replication_name, "_", sample_1, "_vs_", sample_2, ".png")
+    
+    # Save the plot
+    ggsave(file_name, plot = qq_plot, width = 8, height = 6)
   }
+}
+
+
+```
+
+See accros replication
+```{r}
+library(ggplot2)
+
+# Define pairs of sample sizes for QQ plots
+sample_pairs <- list(
+  c("sample_1", "sample_10"),
+  c("sample_1", "sample_100"),
+  c("sample_1", "sample_1000"),
+  c("sample_10", "sample_100"),
+  c("sample_10", "sample_1000"),
+  c("sample_100", "sample_1000")
+)
+
+# Directory to save plots
+output_dir <- "qqplots_across_replications"  # Change to your desired directory
+dir.create(output_dir, showWarnings = FALSE)
+
+# Function to extract the numeric sample size from the name
+extract_sample_size <- function(sample_name) {
+  as.numeric(gsub("sample_", "", sample_name))
+}
+
+# Loop through each pair of sample sizes
+for (pair in sample_pairs) {
+  sample_1 <- pair[1]
+  sample_2 <- pair[2]
+  
+  # Collect Qst values across all replications
+  qst_1_values <- unlist(lapply(qst_sample_results[[sample_1]], function(replication_data) {
+    unlist(replication_data)
+  }))
+  
+  qst_2_values <- unlist(lapply(qst_sample_results[[sample_2]], function(replication_data) {
+    unlist(replication_data)
+  }))
+  
+  # Create a data frame for QQ plotting
+  qq_data <- data.frame(
+    Qst_1 = qst_1_values,
+    Qst_2 = qst_2_values
+  )
+  
+  # Extract numeric sample sizes for legends
+  loci_1 <- extract_sample_size(sample_1)
+  loci_2 <- extract_sample_size(sample_2)
+  
+  # Create QQ plot
+  qq_plot <- ggplot(qq_data, aes(sample = Qst_1, theoretical = Qst_2)) +
+    stat_qq() +
+    stat_qq_line() +
+    labs(
+      title = paste("QQ Plot Across Replications:", loci_1, "vs", loci_2, "Loci"),
+      x = paste("Number of Loci:", loci_1),
+      y = paste("Number of Loci:", loci_2)
+    ) +
+    theme_minimal()
+  
+  # Construct file name
+  file_name <- paste0(output_dir, "/across_replications_", sample_1, "_vs_", sample_2, ".png")
+  
+  # Save the plot
+  ggsave(file_name, plot = qq_plot, width = 8, height = 6)
 }
 
 ```
