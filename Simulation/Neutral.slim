@@ -34,9 +34,12 @@ initialize() {
 
 // output genomes samples of all our populations 
 2000 late() { 
-
-			for (i in 1:subpopCount){
-				g = sim.subpopulations[i-1].sampleIndividuals(1000).genomes;
-				g.outputVCF(paste0("Seed_",simID, "_pop_",i,".vcf"));
-			}
+    // Collect genomes from all subpopulations into a single list
+    genomes = c();
+    for (i in 0:(subpopCount - 1)) {
+        genomes = c(genomes, sim.subpopulations[i].sampleIndividuals(20).genomes);
+    }
+    
+    // Output all sampled genomes to a single VCF file
+    genomes.outputVCF("Seed_" + simID + "_all_pop.vcf");
 }
