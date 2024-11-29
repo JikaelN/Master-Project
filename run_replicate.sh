@@ -4,8 +4,8 @@
 SLIM_EXEC="C:/msys64/mingw64/bin/slim.exe"
 SIM_SCRIPT="C:/Users/SwissHardware/Desktop/Master-Project/Simulation/Neutral.slim"
 NUM_REPLICATES=100
-OUTPUT_DIR="./R_analysis/data/neutral_raw"
-SAMPLE_DIR="./R_analysis/data/processed"
+OUTPUT_DIR="./R_analysis/data/neutral"
+
 
 mkdir -p "$OUTPUT_DIR"
 
