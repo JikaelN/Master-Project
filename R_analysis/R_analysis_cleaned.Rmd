@@ -1,0 +1,3057 @@
+---
+title: "Clean_R_analysis"
+author: "Jikaël Ntoko"
+date: "2024-12-03"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Required package
+```{r}
+if (!require("vcfR")) {
+  install.packages("vcfR")
+  library(vcfR)
+}
+# Generate plots
+library(ggplot2)
+library(kSamples)  # Required for ad.test
+library(VGAM) #L-shaped distribution
+library(dplyr)
+library(tidyr)
+library(nortest)
+
+library(hierfstat)
+if (!requireNamespace("kSamples", quietly = TRUE)) {
+  install.packages("kSamples")
+}
+library(kSamples)
+
+
+source("./script/custom_function.R") # Import your R script
+
+seed_value <- 123
+set.seed(123)
+```
+
+## Import Data for minor and without minor allele sampling
+```{r}
+#Import VCF and get GT data
+data_directory <- "./Data/neutral/"
+all_vcf <- list.files(path= data_directory, full.names = TRUE, pattern='\\.vcf$')
+vcf_data <- import_vcf(all_vcf)
+
+
+# Normal Data set
+data_numeric_list <- list()
+for(replicate in seq_along(vcf_data)){
+  print(paste0("Processinge replicate: ", replicate))
+  data_num <- data_to_numeric(vcf_data[[replicate]])
+  data_numeric_list[[paste0("replicate_",replicate)]] <- data_num
+}
+gc()
+```
+#Normally distributed effect size
+## Without minor allele sampling
+
+```{r}
+
+loci_counts <- c(1, 10, 100, 1000)
+norm_replication <- list()
+
+for (number in 1:10) {
+  #set.seed(seed_value + number)  # Ensure unique seed per replication
+  qst_result_norm <- list()
+  
+  for (replicate in seq_along(data_numeric_list)) {
+    print(paste0("Processing replicate: ", replicate, " replication: ", number))
+    
+    # Split replicate into 8 populations
+    splited_pop <- split_into_pop(data_numeric_list[[replicate]])
+    
+    # Initialize Qst results for the replicate
+    qst_resutl <- list()
+    
+    for (loci in loci_counts) {
+      # Compute phenotype for the 8 populations
+      phenotype <- phenotype_calc_norm(splited_pop, loci)
+      qst <- Qst_cal(phenotype)
+      qst_resutl[[paste0("N_", loci)]] <- qst
+    }
+    
+    # Store Qst results for the replicate
+    qst_result_norm[[paste0("replicate_", replicate)]] <- qst_resutl
+  }
+  
+  # Store Qst results for the replication
+  norm_replication[[paste0("replication_", number)]] <- qst_result_norm
+}
+
+```
+### Data comparison & statistical analysis
+```{r}
+# Define the output folder and create it if necessary
+output_folder <- "./result/norm/wo_maf/within_replication_qqplot"
+if (!dir.exists(output_folder)) {
+  dir.create(output_folder, recursive = TRUE)  # Create folder if it doesn't exist
+}
+
+# Loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_folder, "ks_test_results.txt")
+ad_test_file <- file.path(output_folder, "ad_test_results.txt")
+anova_file <- file.path(output_folder, "anova_results.txt")
+ttest_file <- file.path(output_folder, "t_test_results.txt")
+
+# Initialize file connections
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA and Tukey HSD Results\n")
+cat("===========================\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("================\n\n")
+sink()
+
+# Loop over replications
+for (replication_name in names(norm_replication)) {
+  current_replication <- replication[[replication_name]]  # Extract current replication
+  
+  # Initialize data for ANOVA and T-tests
+  all_loci_values <- list()
+  
+  # Loop over loci comparisons
+  for (comparison in loci_comparisons) {
+    loci_x <- comparison[1]
+    loci_y <- comparison[2]
+    
+    # Extract and combine data across all replicates for the loci sets
+    combined_data <- do.call(rbind, lapply(names(current_replication), function(replicate_name) {
+      replicate_data <- current_replication[[replicate_name]]
+      data.frame(
+        Replicate = replicate_name,
+        x = replicate_data[[loci_x]],
+        y = replicate_data[[loci_y]]
+      )
+    }))
+    
+    # Store data for ANOVA and T-tests
+    all_loci_values[[loci_x]] <- combined_data$x
+    all_loci_values[[loci_y]] <- combined_data$y
+    
+    # Perform KS Test
+    ks_test <- ks.test(combined_data$x, combined_data$y)
+    sink(ks_test_file, append = TRUE)
+    cat("KS Test for", loci_x, "vs", loci_y, "in", replication_name, ":\n")
+    print(ks_test)
+    cat("\n")
+    sink()
+    
+    # Perform Two-Sample Anderson-Darling Test
+    if (length(combined_data$x) > 1 && length(combined_data$y) > 1) {
+      ad_test <- kSamples::ad.test(combined_data$x, combined_data$y)
+      sink(ad_test_file, append = TRUE)
+      cat("AD Test for", loci_x, "vs", loci_y, "in", replication_name, ":\n")
+      print(ad_test)
+      cat("\n")
+      sink()
+    } else {
+      sink(ad_test_file, append = TRUE)
+      cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "in", replication_name, "\n\n")
+      sink()
+    }
+    
+    # Generate QQ plot
+    x_sorted <- sort(combined_data$x, na.last = TRUE)
+    y_sorted <- sort(combined_data$y, na.last = TRUE)
+    plot_data <- data.frame(x = x_sorted, y = y_sorted)
+    
+    plot <- ggplot(data = plot_data, aes(x = y, y = x)) +
+      geom_point(color = "blue") +
+      geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+      labs(
+        title = paste(loci_x, "vs", loci_y, "-", replication_name),
+        x = paste(loci_y),
+        y = paste(loci_x)
+      ) +
+      theme_minimal() +
+      coord_fixed() +
+      scale_x_continuous(limits = c(0.0, 0.1)) +
+      scale_y_continuous(limits = c(0.0, 0.1))
+    
+    file_name <- file.path(output_folder, paste0("QQ_Plot_", loci_x, "_vs_", loci_y, "_", replication_name, ".png"))
+    ggsave(filename = file_name, plot = plot, width = 6, height = 4)
+  }
+  
+  # Combine data for ANOVA and T-tests
+  loci_groups <- unlist(lapply(names(all_loci_values), function(loci) {
+    rep(loci, length(all_loci_values[[loci]]))
+  }))
+  qst_values <- unlist(all_loci_values)
+  data <- data.frame(
+    LociGroup = factor(loci_groups, levels = names(all_loci_values)),
+    QstValue = qst_values
+  )
+  
+  # Perform ANOVA
+  anova_results <- aov(QstValue ~ LociGroup, data = data)
+  sink(anova_file, append = TRUE)
+  cat("ANOVA Results for", replication_name, ":\n")
+  print(summary(anova_results))
+  cat("\n")
+  
+  # Tukey's HSD Post-Hoc Test
+  cat("Tukey HSD Results for", replication_name, ":\n")
+  tukey_results <- TukeyHSD(anova_results)
+  print(tukey_results)
+  cat("\n")
+  sink()
+  
+  # Perform T-Test
+  t_test_results <- pairwise.t.test(
+    data$QstValue,
+    data$LociGroup,
+    p.adjust.method = "bonferroni"
+  )
+  sink(ttest_file, append = TRUE)
+  cat("T-Test Results for", replication_name, ":\n")
+  print(t_test_results)
+  cat("\n")
+  sink()
+}
+
+```
+### between replication
+```{r}
+# Set output directory
+output_dir <- "./result/norm/wo_maf/between_replication_qqplot/"
+if (!dir.exists(output_dir)) dir.create(output_dir)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_dir, "ks_test_results.txt")
+ad_test_file <- file.path(output_dir, "ad_test_results.txt")
+anova_file <- file.path(output_dir, "anova_results.txt")
+ttest_file <- file.path(output_dir, "t_test_results.txt")
+
+# Initialize file connections
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA Results\n")
+cat("=============\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("==============\n\n")
+sink()
+
+
+# Assuming `replication` is the nested structure
+data <- flatten_replication_data(norm_replication)
+
+# Define loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_1"),
+  c("N_10", "N_10"),
+  c("N_100", "N_100"),
+  c("N_1000", "N_1000"),
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Perform statistical comparisons and save results
+for (comparison in loci_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Filter data for the two loci
+  data_x <- data %>% filter(Loci == loci_x) %>% pull(QstValue)
+  data_y <- data %>% filter(Loci == loci_y) %>% pull(QstValue)
+  
+  # Perform KS Test
+  if (length(data_x) > 1 && length(data_y) > 1) {
+    ks_test <- ks.test(data_x, data_y)
+    sink(ks_test_file, append = TRUE)
+    cat("KS Test for", loci_x, "vs", loci_y, ":\n")
+    print(ks_test)
+    cat("\n")
+    sink()
+  }
+  
+  # Perform AD Test using kSamples
+if (length(data_x) > 1 && length(data_y) > 1) {
+  ad_test <- kSamples::ad.test(data_x, data_y)
+  sink(ad_test_file, append = TRUE)
+  cat("AD Test for", loci_x, "vs", loci_y, ":\n")
+  print(ad_test)
+  cat("\n")
+  sink()
+} else {
+  sink(ad_test_file, append = TRUE)
+  cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "\n\n")
+  sink()
+}
+}
+
+# Grouped data for ANOVA and T-Test
+anova_data <- data %>%
+  filter(Loci %in% unlist(loci_comparisons)) %>%
+  group_by(Loci) %>%
+  summarise(QstValues = list(QstValue), .groups = "drop") %>%
+  unnest(cols = c(QstValues))
+
+# Perform ANOVA
+anova_results <- aov(QstValue ~ Loci, data = data)
+sink(anova_file, append = TRUE)
+cat("ANOVA Results:\n")
+print(summary(anova_results))
+cat("\n")
+sink()
+
+# Perform T-Test
+t_test_results <- pairwise.t.test(
+  data$QstValue,
+  data$Loci,
+  p.adjust.method = "bonferroni"
+)
+sink(ttest_file, append = TRUE)
+cat("T-Test Results:\n")
+print(t_test_results)
+cat("\n")
+sink()
+# Define loci comparisons for QQ plots
+qqplot_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Generate QQ plots for specified comparisons
+for (comparison in qqplot_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Filter data for the two loci
+  data_x <- data %>% filter(Loci == loci_x) %>% pull(QstValue)
+  data_y <- data %>% filter(Loci == loci_y) %>% pull(QstValue)
+  
+  if (length(data_x) > 1 && length(data_y) > 1) {
+    # Generate QQ plot
+    qqplot_data <- data.frame(
+      x = sort(data_x),
+      y = sort(data_y)
+    )
+    
+    qq_plot <- ggplot(qqplot_data, aes(x = x, y = y)) +
+      geom_point(color = "blue") +
+      geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+      labs(
+        title = paste("QQ Plot:", loci_x, "vs", loci_y),
+        x = paste(loci_x ),
+        y = paste(loci_y)
+      ) +
+      theme_minimal() +
+      coord_fixed() +
+      scale_x_continuous(limits = c(0.0, 0.1)) +
+      scale_y_continuous(limits = c(0.0, 0.1))
+    
+    # Save the QQ plot
+    qqplot_file <- file.path(output_dir, paste0("QQ_Plot_", loci_x, "_vs_", loci_y, ".png"))
+    ggsave(qqplot_file, qq_plot, width = 6, height = 6)
+  } else {
+    cat("Insufficient data for QQ Plot for", loci_x, "vs", loci_y, "\n")
+  }
+}
+
+
+```
+### Average over the 10 iterations
+```{r}
+# Define loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Create an output folder
+output_folder <- "./result/norm/wo_maf//average_qqplots"
+if (!dir.exists(output_folder)) dir.create(output_folder)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_folder, "ks_test_results.txt")
+ad_test_file <- file.path(output_folder, "ad_test_results.txt")
+anova_file <- file.path(output_folder, "anova_results.txt")
+ttest_file <- file.path(output_folder, "t_test_results.txt")
+
+# Initialize output files
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA and Tukey HSD Results\n")
+cat("===========================\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("================\n\n")
+sink()
+
+# Loop over loci comparisons
+for (comparison in loci_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Average values over all replications for each replicate
+  averaged_data <- do.call(rbind, lapply(names(norm_replication[[1]]), function(replicate_name) {
+    # Extract replicate data across all replications
+    replicate_values <- do.call(rbind, lapply(names(norm_replication), function(replication_name) {
+      norm_replication[[replication_name]][[replicate_name]]
+    }))
+    
+    # Ensure data is numeric
+    numeric_values <- as.data.frame(lapply(as.data.frame(replicate_values), as.numeric))
+    
+    # Compute averages for loci_x and loci_y
+    data.frame(
+      Replicate = replicate_name,
+      x = mean(numeric_values[[loci_x]], na.rm = TRUE),
+      y = mean(numeric_values[[loci_y]], na.rm = TRUE)
+    )
+  }))
+  
+  # Sort values for quantile-quantile plotting
+  x_sorted <- sort(averaged_data$x, na.last = TRUE)
+  y_sorted <- sort(averaged_data$y, na.last = TRUE)
+  
+  # Perform Kolmogorov-Smirnov Test
+  ks_test <- ks.test(x_sorted, y_sorted)
+  sink(ks_test_file, append = TRUE)
+  cat("KS Test for", loci_x, "vs", loci_y, ":\n")
+  print(ks_test)
+  cat("\n")
+  sink()
+  
+    # Perform Anderson-Darling Test using kSamples
+  if (length(x_sorted) > 1 && length(y_sorted) > 1) {
+    ad_test <- kSamples::ad.test(x_sorted, y_sorted)
+    sink(ad_test_file, append = TRUE)
+    cat("AD Test for", loci_x, "vs", loci_y, ":\n")
+    print(ad_test)
+    cat("\n")
+    sink()
+  } else {
+    sink(ad_test_file, append = TRUE)
+    cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "\n\n")
+    sink()
+  }
+  
+   # Combine data for ANOVA and t-tests
+  combined_data <- data.frame(
+    Group = rep(c(loci_x, loci_y), each = length(x_sorted)),
+    Value = c(x_sorted, y_sorted)
+  )
+  
+  # Perform ANOVA
+  anova_results <- aov(Value ~ Group, data = combined_data)
+  sink(anova_file, append = TRUE)
+  cat("ANOVA Results for", loci_x, "vs", loci_y, ":\n")
+  print(summary(anova_results))
+  cat("\n")
+  
+  # Tukey's HSD Post-Hoc Test
+  cat("Tukey HSD Results for", loci_x, "vs", loci_y, ":\n")
+  tukey_results <- TukeyHSD(anova_results)
+  print(tukey_results)
+  cat("\n")
+  sink()
+  
+  # Perform t-test
+  t_test_results <- t.test(x_sorted, y_sorted)
+  sink(ttest_file, append = TRUE)
+  cat("T-Test Results for", loci_x, "vs", loci_y, ":\n")
+  print(t_test_results)
+  cat("\n")
+  sink()
+  
+  # Create a data frame for plotting
+  plot_data <- data.frame(x = x_sorted, y = y_sorted)
+  
+  # Generate QQ plot
+  plot <- ggplot(data = plot_data, aes(x = y, y = x)) +
+    geom_point(color = "blue") +
+    geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+    labs(
+      title = paste("Averaged QQ Plot:", loci_x, "vs", loci_y),
+      x = paste("Average Quantiles of", loci_y),
+      y = paste("Average Quantiles of", loci_x)
+    ) +
+    theme_minimal() +
+    coord_fixed() +
+    scale_x_continuous(limits = c(0.0, 0.06)) +
+    scale_y_continuous(limits = c(0.0, 0.06))
+  
+  # Save the plot
+  file_name <- file.path(output_folder, paste0("Averaged_QQ_Plot_", loci_x, "_vs_", loci_y, ".png"))
+  ggsave(filename = file_name, plot = plot, width = 6, height = 4)
+}
+
+```
+
+## With minor allele sampling
+```{r}
+# Minor allele sampling dataset
+minor_data_list <- list()
+for(replicate in seq_along(data_numeric_list)){
+  print(paste0("Minor allele sampling  - Processing replicate: ", replicate))
+  maf_data <- maf(data_numeric_list[[replicate]])
+  
+  minor_data_list[[paste0("Replicate_", replicate)]] <- maf_data
+}
+
+```
+
+```{r}
+loci_counts <- c(1, 10, 100, 1000)
+norm_minor_replication <- list()
+
+for (number in 1:10) {
+  #set.seed(seed_value + number)  # Ensure unique seed per replication
+  qst_result_norm <- list()
+  
+  for (replicate in seq_along(minor_data_list)) {
+    print(paste0("Processing replicate: ", replicate, " replication: ", number))
+    
+    # Split replicate into 8 populations
+    splited_pop <- split_into_pop(minor_data_list[[replicate]])
+    
+    # Initialize Qst results for the replicate
+    qst_resutl <- list()
+    
+    for (loci in loci_counts) {
+      #set.seed(seed_value + number + loci + replicate)  # Unique seed for loci, replicate, and replication
+      
+      # Compute phenotype for the 8 populations
+      phenotype <- phenotype_calc_norm(splited_pop, loci)
+      qst <- Qst_cal(phenotype)
+      qst_resutl[[paste0("N_", loci)]] <- qst
+    }
+    
+    # Store Qst results for the replicate
+    qst_result_norm[[paste0("replicate_", replicate)]] <- qst_resutl
+  }
+  
+  # Store Qst results for the replication
+  norm_minor_replication[[paste0("replication_", number)]] <- qst_result_norm
+}
+
+```
+
+### within replication
+```{r}
+# Define the output folder and create it if necessary
+output_folder <- "./result/norm/maf/within_replication_qqplot"
+if (!dir.exists(output_folder)) {
+  dir.create(output_folder, recursive = TRUE)  # Create folder if it doesn't exist
+}
+
+# Loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_folder, "ks_test_results.txt")
+ad_test_file <- file.path(output_folder, "ad_test_results.txt")
+anova_file <- file.path(output_folder, "anova_results.txt")
+ttest_file <- file.path(output_folder, "t_test_results.txt")
+
+# Initialize file connections
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA and Tukey HSD Results\n")
+cat("===========================\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("================\n\n")
+sink()
+
+# Loop over replications
+for (replication_name in names(norm_minor_replication)) {
+  current_replication <- norm_minor_replication[[replication_name]]  # Extract current replication
+  
+  # Initialize data for ANOVA and T-tests
+  all_loci_values <- list()
+  
+  # Loop over loci comparisons
+  for (comparison in loci_comparisons) {
+    loci_x <- comparison[1]
+    loci_y <- comparison[2]
+    
+    # Extract and combine data across all replicates for the loci sets
+    combined_data <- do.call(rbind, lapply(names(current_replication), function(replicate_name) {
+      replicate_data <- current_replication[[replicate_name]]
+      data.frame(
+        Replicate = replicate_name,
+        x = replicate_data[[loci_x]],
+        y = replicate_data[[loci_y]]
+      )
+    }))
+    
+    # Store data for ANOVA and T-tests
+    all_loci_values[[loci_x]] <- combined_data$x
+    all_loci_values[[loci_y]] <- combined_data$y
+    
+    # Perform KS Test
+    ks_test <- ks.test(combined_data$x, combined_data$y)
+    sink(ks_test_file, append = TRUE)
+    cat("KS Test for", loci_x, "vs", loci_y, "in", replication_name, ":\n")
+    print(ks_test)
+    cat("\n")
+    sink()
+    
+      # Perform AD Test using kSamples
+  if (length(combined_data$x) > 1 && length(combined_data$y) > 1) {
+    ad_test <- kSamples::ad.test(combined_data$x, combined_data$y)
+    sink(ad_test_file, append = TRUE)
+    cat("AD Test for", loci_x, "vs", loci_y, "in", replication_name, ":\n")
+    print(ad_test)
+    cat("\n")
+    sink()
+  } else {
+    sink(ad_test_file, append = TRUE)
+    cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "in", replication_name, "\n\n")
+    sink()
+  }
+    
+    # Generate QQ plot
+    x_sorted <- sort(combined_data$x, na.last = TRUE)
+    y_sorted <- sort(combined_data$y, na.last = TRUE)
+    plot_data <- data.frame(x = x_sorted, y = y_sorted)
+    
+    plot <- ggplot(data = plot_data, aes(x = y, y = x)) +
+      geom_point(color = "blue") +
+      geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+      labs(
+        title = paste(loci_x, "vs", loci_y, "-", replication_name),
+        x = paste(loci_y),
+        y = paste(loci_x)
+      ) +
+      theme_minimal() +
+      coord_fixed() +
+      scale_x_continuous(limits = c(0.0, 0.1)) +
+      scale_y_continuous(limits = c(0.0, 0.1))
+    
+    file_name <- file.path(output_folder, paste0("QQ_Plot_", loci_x, "_vs_", loci_y, "_", replication_name, ".png"))
+    ggsave(filename = file_name, plot = plot, width = 6, height = 4)
+  }
+  
+  # Combine data for ANOVA and T-tests
+  loci_groups <- unlist(lapply(names(all_loci_values), function(loci) {
+    rep(loci, length(all_loci_values[[loci]]))
+  }))
+  qst_values <- unlist(all_loci_values)
+  data <- data.frame(
+    LociGroup = factor(loci_groups, levels = names(all_loci_values)),
+    QstValue = qst_values
+  )
+  
+  # Perform ANOVA
+  anova_results <- aov(QstValue ~ LociGroup, data = data)
+  sink(anova_file, append = TRUE)
+  cat("ANOVA Results for", replication_name, ":\n")
+  print(summary(anova_results))
+  cat("\n")
+  
+  # Tukey's HSD Post-Hoc Test
+  cat("Tukey HSD Results for", replication_name, ":\n")
+  tukey_results <- TukeyHSD(anova_results)
+  print(tukey_results)
+  cat("\n")
+  sink()
+  
+  # Perform T-Test
+  t_test_results <- pairwise.t.test(
+    data$QstValue,
+    data$LociGroup,
+    p.adjust.method = "bonferroni"
+  )
+  sink(ttest_file, append = TRUE)
+  cat("T-Test Results for", replication_name, ":\n")
+  print(t_test_results)
+  cat("\n")
+  sink()
+}
+
+```
+### between replication
+```{r}
+# Set output directory
+output_dir <- "./result/norm/maf/between_replication_qqplot/"
+if (!dir.exists(output_dir)) dir.create(output_dir)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_dir, "ks_test_results.txt")
+ad_test_file <- file.path(output_dir, "ad_test_results.txt")
+anova_file <- file.path(output_dir, "anova_results.txt")
+ttest_file <- file.path(output_dir, "t_test_results.txt")
+
+# Initialize file connections
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA Results\n")
+cat("=============\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("==============\n\n")
+sink()
+
+
+# Assuming `replication` is the nested structure
+data <- flatten_replication_data(norm_minor_replication)
+
+# Define loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_1"),
+  c("N_10", "N_10"),
+  c("N_100", "N_100"),
+  c("N_1000", "N_1000"),
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Perform statistical comparisons and save results
+for (comparison in loci_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Filter data for the two loci
+  data_x <- data %>% filter(Loci == loci_x) %>% pull(QstValue)
+  data_y <- data %>% filter(Loci == loci_y) %>% pull(QstValue)
+  
+  # Perform KS Test
+  if (length(data_x) > 1 && length(data_y) > 1) {
+    ks_test <- ks.test(data_x, data_y)
+    sink(ks_test_file, append = TRUE)
+    cat("KS Test for", loci_x, "vs", loci_y, ":\n")
+    print(ks_test)
+    cat("\n")
+    sink()
+  }
+  
+  # Perform AD Test using kSamples
+if (length(data_x) > 1 && length(data_y) > 1) {
+  ad_test <- kSamples::ad.test(data_x, data_y)
+  sink(ad_test_file, append = TRUE)
+  cat("AD Test for", loci_x, "vs", loci_y, ":\n")
+  print(ad_test)
+  cat("\n")
+  sink()
+} else {
+  sink(ad_test_file, append = TRUE)
+  cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "\n\n")
+  sink()
+}
+}
+
+# Grouped data for ANOVA and T-Test
+anova_data <- data %>%
+  filter(Loci %in% unlist(loci_comparisons)) %>%
+  group_by(Loci) %>%
+  summarise(QstValues = list(QstValue), .groups = "drop") %>%
+  unnest(cols = c(QstValues))
+
+# Perform ANOVA
+anova_results <- aov(QstValue ~ Loci, data = data)
+sink(anova_file, append = TRUE)
+cat("ANOVA Results:\n")
+print(summary(anova_results))
+cat("\n")
+sink()
+
+# Perform T-Test
+t_test_results <- pairwise.t.test(
+  data$QstValue,
+  data$Loci,
+  p.adjust.method = "bonferroni"
+)
+sink(ttest_file, append = TRUE)
+cat("T-Test Results:\n")
+print(t_test_results)
+cat("\n")
+sink()
+# Define loci comparisons for QQ plots
+qqplot_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Generate QQ plots for specified comparisons
+for (comparison in qqplot_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Filter data for the two loci
+  data_x <- data %>% filter(Loci == loci_x) %>% pull(QstValue)
+  data_y <- data %>% filter(Loci == loci_y) %>% pull(QstValue)
+  
+  if (length(data_x) > 1 && length(data_y) > 1) {
+    # Generate QQ plot
+    qqplot_data <- data.frame(
+      x = sort(data_x),
+      y = sort(data_y)
+    )
+    
+    qq_plot <- ggplot(qqplot_data, aes(x = x, y = y)) +
+      geom_point(color = "blue") +
+      geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+      labs(
+        title = paste("QQ Plot:", loci_x, "vs", loci_y),
+        x = paste(loci_x ),
+        y = paste(loci_y)
+      ) +
+      theme_minimal() +
+      coord_fixed()+
+      scale_x_continuous(limits = c(0.0, 0.1)) +
+      scale_y_continuous(limits = c(0.0, 0.1))
+    
+    # Save the QQ plot
+    qqplot_file <- file.path(output_dir, paste0("QQ_Plot_", loci_x, "_vs_", loci_y, ".png"))
+    ggsave(qqplot_file, qq_plot, width = 6, height = 6)
+  } else {
+    cat("Insufficient data for QQ Plot for", loci_x, "vs", loci_y, "\n")
+  }
+}
+
+```
+## Average over 10 iteration
+```{r}
+# Define loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Create an output folder
+output_folder <- "./result/norm/maf/average_qqplots"
+if (!dir.exists(output_folder)) dir.create(output_folder)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_folder, "ks_test_results.txt")
+ad_test_file <- file.path(output_folder, "ad_test_results.txt")
+anova_file <- file.path(output_folder, "anova_results.txt")
+ttest_file <- file.path(output_folder, "t_test_results.txt")
+
+# Initialize output files
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA and Tukey HSD Results\n")
+cat("===========================\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("================\n\n")
+sink()
+
+# Loop over loci comparisons
+for (comparison in loci_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Average values over all replications for each replicate
+  averaged_data <- do.call(rbind, lapply(names(norm_minor_replication[[1]]), function(replicate_name) {
+    # Extract replicate data across all replications
+    replicate_values <- do.call(rbind, lapply(names(norm_minor_replication), function(replication_name) {
+      norm_minor_replication[[replication_name]][[replicate_name]]
+    }))
+    
+    # Ensure data is numeric
+    numeric_values <- as.data.frame(lapply(as.data.frame(replicate_values), as.numeric))
+    
+    # Compute averages for loci_x and loci_y
+    data.frame(
+      Replicate = replicate_name,
+      x = mean(numeric_values[[loci_x]], na.rm = TRUE),
+      y = mean(numeric_values[[loci_y]], na.rm = TRUE)
+    )
+  }))
+  
+  # Sort values for quantile-quantile plotting
+  x_sorted <- sort(averaged_data$x, na.last = TRUE)
+  y_sorted <- sort(averaged_data$y, na.last = TRUE)
+  
+  # Perform Kolmogorov-Smirnov Test
+  ks_test <- ks.test(x_sorted, y_sorted)
+  sink(ks_test_file, append = TRUE)
+  cat("KS Test for", loci_x, "vs", loci_y, ":\n")
+  print(ks_test)
+  cat("\n")
+  sink()
+  
+    # Perform Anderson-Darling Test using kSamples
+  if (length(x_sorted) > 1 && length(y_sorted) > 1) {
+    ad_test <- kSamples::ad.test(x_sorted, y_sorted)
+    sink(ad_test_file, append = TRUE)
+    cat("AD Test for", loci_x, "vs", loci_y, ":\n")
+    print(ad_test)
+    cat("\n")
+    sink()
+  } else {
+    sink(ad_test_file, append = TRUE)
+    cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "\n\n")
+    sink()
+  }
+
+  
+   # Combine data for ANOVA and t-tests
+  combined_data <- data.frame(
+    Group = rep(c(loci_x, loci_y), each = length(x_sorted)),
+    Value = c(x_sorted, y_sorted)
+  )
+  
+  # Perform ANOVA
+  anova_results <- aov(Value ~ Group, data = combined_data)
+  sink(anova_file, append = TRUE)
+  cat("ANOVA Results for", loci_x, "vs", loci_y, ":\n")
+  print(summary(anova_results))
+  cat("\n")
+  
+  # Tukey's HSD Post-Hoc Test
+  cat("Tukey HSD Results for", loci_x, "vs", loci_y, ":\n")
+  tukey_results <- TukeyHSD(anova_results)
+  print(tukey_results)
+  cat("\n")
+  sink()
+  
+  # Perform t-test
+  t_test_results <- t.test(x_sorted, y_sorted)
+  sink(ttest_file, append = TRUE)
+  cat("T-Test Results for", loci_x, "vs", loci_y, ":\n")
+  print(t_test_results)
+  cat("\n")
+  sink()
+  
+  # Create a data frame for plotting
+  plot_data <- data.frame(x = x_sorted, y = y_sorted)
+  
+  # Generate QQ plot
+  plot <- ggplot(data = plot_data, aes(x = y, y = x)) +
+    geom_point(color = "blue") +
+    geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+    labs(
+      title = paste("Averaged QQ Plot:", loci_x, "vs", loci_y),
+      x = paste( loci_y),
+      y = paste( loci_x)
+    ) +
+    theme_minimal() +
+    coord_fixed() +
+    scale_x_continuous(limits = c(0.0, 0.04)) +
+    scale_y_continuous(limits = c(0.0, 0.04))
+  
+  # Save the plot
+  file_name <- file.path(output_folder, paste0("Averaged_QQ_Plot_", loci_x, "_vs_", loci_y, ".png"))
+  ggsave(filename = file_name, plot = plot, width = 6, height = 4)
+}
+```
+
+# Uniform distribution
+## Without minor allele sampling
+```{r}
+
+loci_counts <- c(1, 10, 100, 1000)
+uni_replication <- list()
+
+for (number in 1:10) {
+  #set.seed(seed_value + number)  # Ensure unique seed per replication
+  qst_result_norm <- list()
+  
+  for (replicate in seq_along(data_numeric_list)) {
+    print(paste0("Processing replicate: ", replicate, " replication: ", number))
+    
+    # Split replicate into 8 populations
+    splited_pop <- split_into_pop(data_numeric_list[[replicate]])
+    
+    # Initialize Qst results for the replicate
+    qst_resutl <- list()
+    
+    for (loci in loci_counts) {
+      #set.seed(seed_value + number + loci + replicate)  # Unique seed for loci, replicate, and replication
+      
+      # Compute phenotype for the 8 populations
+      phenotype <- phenotype_calc_uni(splited_pop, loci)
+      qst <- Qst_cal(phenotype)
+      qst_resutl[[paste0("N_", loci)]] <- qst
+    }
+    
+    # Store Qst results for the replicate
+    qst_result_norm[[paste0("replicate_", replicate)]] <- qst_resutl
+  }
+  
+  # Store Qst results for the replication
+  uni_replication[[paste0("replication_", number)]] <- qst_result_norm
+}
+
+```
+
+
+### within replicate:
+```{r}
+# Define the output folder and create it if necessary
+output_folder <- "./result/uni/wo_maf/within_replication_qqplot"
+if (!dir.exists(output_folder)) {
+  dir.create(output_folder, recursive = TRUE)  # Create folder if it doesn't exist
+}
+
+# Loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_folder, "ks_test_results.txt")
+ad_test_file <- file.path(output_folder, "ad_test_results.txt")
+anova_file <- file.path(output_folder, "anova_results.txt")
+ttest_file <- file.path(output_folder, "t_test_results.txt")
+
+# Initialize file connections
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA and Tukey HSD Results\n")
+cat("===========================\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("================\n\n")
+sink()
+
+# Loop over replications
+for (replication_name in names(uni_replication)) {
+  current_replication <- uni_replication[[replication_name]]  # Extract current replication
+  
+  # Initialize data for ANOVA and T-tests
+  all_loci_values <- list()
+  
+  # Loop over loci comparisons
+  for (comparison in loci_comparisons) {
+    loci_x <- comparison[1]
+    loci_y <- comparison[2]
+    
+    # Extract and combine data across all replicates for the loci sets
+    combined_data <- do.call(rbind, lapply(names(current_replication), function(replicate_name) {
+      replicate_data <- current_replication[[replicate_name]]
+      data.frame(
+        Replicate = replicate_name,
+        x = replicate_data[[loci_x]],
+        y = replicate_data[[loci_y]]
+      )
+    }))
+    
+    # Store data for ANOVA and T-tests
+    all_loci_values[[loci_x]] <- combined_data$x
+    all_loci_values[[loci_y]] <- combined_data$y
+    
+    # Perform KS Test
+    ks_test <- ks.test(combined_data$x, combined_data$y)
+    sink(ks_test_file, append = TRUE)
+    cat("KS Test for", loci_x, "vs", loci_y, "in", replication_name, ":\n")
+    print(ks_test)
+    cat("\n")
+    sink()
+    
+    # Perform AD Test using kSamples
+if (length(combined_data$x) > 1 && length(combined_data$y) > 1) {
+  ad_test <- kSamples::ad.test(combined_data$x, combined_data$y)
+  sink(ad_test_file, append = TRUE)
+  cat("AD Test for", loci_x, "vs", loci_y, "in", replication_name, ":\n")
+  print(ad_test)
+  cat("\n")
+  sink()
+} else {
+  sink(ad_test_file, append = TRUE)
+  cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "in", replication_name, "\n\n")
+  sink()
+}
+    
+    # Generate QQ plot
+    x_sorted <- sort(combined_data$x, na.last = TRUE)
+    y_sorted <- sort(combined_data$y, na.last = TRUE)
+    plot_data <- data.frame(x = x_sorted, y = y_sorted)
+    
+    plot <- ggplot(data = plot_data, aes(x = y, y = x)) +
+      geom_point(color = "blue") +
+      geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+      labs(
+        title = paste(loci_x, "vs", loci_y, "-", replication_name),
+        x = paste(loci_y),
+        y = paste(loci_x)
+      ) +
+      theme_minimal() +
+      coord_fixed() +
+      scale_x_continuous(limits = c(0.0, 0.1)) +
+      scale_y_continuous(limits = c(0.0, 0.1))
+    
+    file_name <- file.path(output_folder, paste0("QQ_Plot_", loci_x, "_vs_", loci_y, "_", replication_name, ".png"))
+    ggsave(filename = file_name, plot = plot, width = 6, height = 4)
+  }
+  
+  # Combine data for ANOVA and T-tests
+  loci_groups <- unlist(lapply(names(all_loci_values), function(loci) {
+    rep(loci, length(all_loci_values[[loci]]))
+  }))
+  qst_values <- unlist(all_loci_values)
+  data <- data.frame(
+    LociGroup = factor(loci_groups, levels = names(all_loci_values)),
+    QstValue = qst_values
+  )
+  
+  # Perform ANOVA
+  anova_results <- aov(QstValue ~ LociGroup, data = data)
+  sink(anova_file, append = TRUE)
+  cat("ANOVA Results for", replication_name, ":\n")
+  print(summary(anova_results))
+  cat("\n")
+  
+  # Tukey's HSD Post-Hoc Test
+  cat("Tukey HSD Results for", replication_name, ":\n")
+  tukey_results <- TukeyHSD(anova_results)
+  print(tukey_results)
+  cat("\n")
+  sink()
+  
+  # Perform T-Test
+  t_test_results <- pairwise.t.test(
+    data$QstValue,
+    data$LociGroup,
+    p.adjust.method = "bonferroni"
+  )
+  sink(ttest_file, append = TRUE)
+  cat("T-Test Results for", replication_name, ":\n")
+  print(t_test_results)
+  cat("\n")
+  sink()
+}
+```
+### all replicate
+```{r}
+# Set output directory
+output_dir <- "./result/uni/wo_maf/between_replication_qqplot"
+if (!dir.exists(output_dir)) dir.create(output_dir)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_dir, "ks_test_results.txt")
+ad_test_file <- file.path(output_dir, "ad_test_results.txt")
+anova_file <- file.path(output_dir, "anova_results.txt")
+ttest_file <- file.path(output_dir, "t_test_results.txt")
+
+# Initialize file connections
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA Results\n")
+cat("=============\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("==============\n\n")
+sink()
+
+
+# Assuming `replication` is the nested structure
+data <- flatten_replication_data(uni_replication)
+
+# Define loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_1"),
+  c("N_10", "N_10"),
+  c("N_100", "N_100"),
+  c("N_1000", "N_1000"),
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Perform statistical comparisons and save results
+for (comparison in loci_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Filter data for the two loci
+  data_x <- data %>% filter(Loci == loci_x) %>% pull(QstValue)
+  data_y <- data %>% filter(Loci == loci_y) %>% pull(QstValue)
+  
+  # Perform KS Test
+  if (length(data_x) > 1 && length(data_y) > 1) {
+    ks_test <- ks.test(data_x, data_y)
+    sink(ks_test_file, append = TRUE)
+    cat("KS Test for", loci_x, "vs", loci_y, ":\n")
+    print(ks_test)
+    cat("\n")
+    sink()
+  }
+  
+  # Perform AD Test using kSamples
+if (length(data_x) > 1 && length(data_y) > 1) {
+  ad_test <- kSamples::ad.test(data_x, data_y)
+  sink(ad_test_file, append = TRUE)
+  cat("AD Test for", loci_x, "vs", loci_y, ":\n")
+  print(ad_test)
+  cat("\n")
+  sink()
+} else {
+  sink(ad_test_file, append = TRUE)
+  cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "\n\n")
+  sink()
+}
+}
+
+# Grouped data for ANOVA and T-Test
+anova_data <- data %>%
+  filter(Loci %in% unlist(loci_comparisons)) %>%
+  group_by(Loci) %>%
+  summarise(QstValues = list(QstValue), .groups = "drop") %>%
+  unnest(cols = c(QstValues))
+
+# Perform ANOVA
+anova_results <- aov(QstValue ~ Loci, data = data)
+sink(anova_file, append = TRUE)
+cat("ANOVA Results:\n")
+print(summary(anova_results))
+cat("\n")
+sink()
+
+# Perform T-Test
+t_test_results <- pairwise.t.test(
+  data$QstValue,
+  data$Loci,
+  p.adjust.method = "bonferroni"
+)
+sink(ttest_file, append = TRUE)
+cat("T-Test Results:\n")
+print(t_test_results)
+cat("\n")
+sink()
+# Define loci comparisons for QQ plots
+qqplot_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Generate QQ plots for specified comparisons
+for (comparison in qqplot_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Filter data for the two loci
+  data_x <- data %>% filter(Loci == loci_x) %>% pull(QstValue)
+  data_y <- data %>% filter(Loci == loci_y) %>% pull(QstValue)
+  
+  if (length(data_x) > 1 && length(data_y) > 1) {
+    # Generate QQ plot
+    qqplot_data <- data.frame(
+      x = sort(data_x),
+      y = sort(data_y)
+    )
+    
+    qq_plot <- ggplot(qqplot_data, aes(x = x, y = y)) +
+      geom_point(color = "blue") +
+      geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+      labs(
+        title = paste("QQ Plot:", loci_x, "vs", loci_y),
+        x = paste(loci_x ),
+        y = paste(loci_y)
+      ) +
+      theme_minimal() +
+      coord_fixed()+
+      scale_x_continuous(limits = c(0.0, 0.1)) +
+      scale_y_continuous(limits = c(0.0, 0.1))
+    
+    # Save the QQ plot
+    qqplot_file <- file.path(output_dir, paste0("QQ_Plot_", loci_x, "_vs_", loci_y, ".png"))
+    ggsave(qqplot_file, qq_plot, width = 6, height = 6)
+  } else {
+    cat("Insufficient data for QQ Plot for", loci_x, "vs", loci_y, "\n")
+  }
+}
+
+```
+### average over 10 iterations
+```{r}
+# Define loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Create an output folder
+output_folder <- "./result/uni/wo_maf//average_qqplots"
+if (!dir.exists(output_folder)) dir.create(output_folder)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_folder, "ks_test_results.txt")
+ad_test_file <- file.path(output_folder, "ad_test_results.txt")
+anova_file <- file.path(output_folder, "anova_results.txt")
+ttest_file <- file.path(output_folder, "t_test_results.txt")
+
+# Initialize output files
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA and Tukey HSD Results\n")
+cat("===========================\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("================\n\n")
+sink()
+
+# Loop over loci comparisons
+for (comparison in loci_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Average values over all replications for each replicate
+  averaged_data <- do.call(rbind, lapply(names(uni_replication[[1]]), function(replicate_name) {
+    # Extract replicate data across all replications
+    replicate_values <- do.call(rbind, lapply(names(uni_replication), function(replication_name) {
+      uni_replication[[replication_name]][[replicate_name]]
+    }))
+    
+    # Ensure data is numeric
+    numeric_values <- as.data.frame(lapply(as.data.frame(replicate_values), as.numeric))
+    
+    # Compute averages for loci_x and loci_y
+    data.frame(
+      Replicate = replicate_name,
+      x = mean(numeric_values[[loci_x]], na.rm = TRUE),
+      y = mean(numeric_values[[loci_y]], na.rm = TRUE)
+    )
+  }))
+  
+  # Sort values for quantile-quantile plotting
+  x_sorted <- sort(averaged_data$x, na.last = TRUE)
+  y_sorted <- sort(averaged_data$y, na.last = TRUE)
+  
+  # Perform Kolmogorov-Smirnov Test
+  ks_test <- ks.test(x_sorted, y_sorted)
+  sink(ks_test_file, append = TRUE)
+  cat("KS Test for", loci_x, "vs", loci_y, ":\n")
+  print(ks_test)
+  cat("\n")
+  sink()
+  
+  # Perform Anderson-Darling Test
+if (length(x_sorted) > 1 && length(y_sorted) > 1) {
+  ad_test <- kSamples::ad.test(x_sorted, y_sorted)
+  sink(ad_test_file, append = TRUE)
+  cat("AD Test for", loci_x, "vs", loci_y, ":\n")
+  print(ad_test)
+  cat("\n")
+  sink()
+} else {
+  sink(ad_test_file, append = TRUE)
+  cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "\n\n")
+  sink()
+}
+  
+   # Combine data for ANOVA and t-tests
+  combined_data <- data.frame(
+    Group = rep(c(loci_x, loci_y), each = length(x_sorted)),
+    Value = c(x_sorted, y_sorted)
+  )
+  
+  # Perform ANOVA
+  anova_results <- aov(Value ~ Group, data = combined_data)
+  sink(anova_file, append = TRUE)
+  cat("ANOVA Results for", loci_x, "vs", loci_y, ":\n")
+  print(summary(anova_results))
+  cat("\n")
+  
+  # Tukey's HSD Post-Hoc Test
+  cat("Tukey HSD Results for", loci_x, "vs", loci_y, ":\n")
+  tukey_results <- TukeyHSD(anova_results)
+  print(tukey_results)
+  cat("\n")
+  sink()
+  
+  # Perform t-test
+  t_test_results <- t.test(x_sorted, y_sorted)
+  sink(ttest_file, append = TRUE)
+  cat("T-Test Results for", loci_x, "vs", loci_y, ":\n")
+  print(t_test_results)
+  cat("\n")
+  sink()
+  
+  # Create a data frame for plotting
+  plot_data <- data.frame(x = x_sorted, y = y_sorted)
+  
+  # Generate QQ plot
+  plot <- ggplot(data = plot_data, aes(x = y, y = x)) +
+    geom_point(color = "blue") +
+    geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+    labs(
+      title = paste("Averaged QQ Plot:", loci_x, "vs", loci_y),
+      x = paste(loci_y),
+      y = paste(loci_x)
+    ) +
+    theme_minimal() +
+    coord_fixed() +
+    scale_x_continuous(limits = c(0.0, 0.06)) +
+    scale_y_continuous(limits = c(0.0, 0.06))
+  
+  # Save the plot
+  file_name <- file.path(output_folder, paste0("Averaged_QQ_Plot_", loci_x, "_vs_", loci_y, ".png"))
+  ggsave(filename = file_name, plot = plot, width = 6, height = 4)
+}
+```
+
+
+## With minor allele sampling
+```{r}
+loci_counts <- c(1, 10, 100, 1000)
+uni_minor_replication <- list()
+
+for (number in 1:10) {
+  #set.seed(seed_value + number)  # Ensure unique seed per replication
+  qst_result_norm <- list()
+  
+  for (replicate in seq_along(minor_data_list)) {
+    print(paste0("Processing replicate: ", replicate, " replication: ", number))
+    
+    # Split replicate into 8 populations
+    splited_pop <- split_into_pop(minor_data_list[[replicate]])
+    
+    # Initialize Qst results for the replicate
+    qst_resutl <- list()
+    
+    for (loci in loci_counts) {
+      #set.seed(seed_value + number + loci + replicate)  # Unique seed for loci, replicate, and replication
+      
+      # Compute phenotype for the 8 populations
+      phenotype <- phenotype_calc_uni(splited_pop, loci)
+      qst <- Qst_cal(phenotype)
+      qst_resutl[[paste0("N_", loci)]] <- qst
+    }
+    
+    # Store Qst results for the replicate
+    qst_result_norm[[paste0("replicate_", replicate)]] <- qst_resutl
+  }
+  
+  # Store Qst results for the replication
+  uni_minor_replication[[paste0("replication_", number)]] <- qst_result_norm
+}
+
+```
+
+### within replication
+```{r}
+# Define the output folder and create it if necessary
+output_folder <- "./result/uni/maf/within_replication_qqplot"
+if (!dir.exists(output_folder)) {
+  dir.create(output_folder, recursive = TRUE)  # Create folder if it doesn't exist
+}
+
+# Loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_folder, "ks_test_results.txt")
+ad_test_file <- file.path(output_folder, "ad_test_results.txt")
+anova_file <- file.path(output_folder, "anova_results.txt")
+ttest_file <- file.path(output_folder, "t_test_results.txt")
+
+# Initialize file connections
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA and Tukey HSD Results\n")
+cat("===========================\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("================\n\n")
+sink()
+
+# Loop over replications
+for (replication_name in names(uni_minor_replication)) {
+  current_replication <- uni_minor_replication[[replication_name]]  # Extract current replication
+  
+  # Initialize data for ANOVA and T-tests
+  all_loci_values <- list()
+  
+  # Loop over loci comparisons
+  for (comparison in loci_comparisons) {
+    loci_x <- comparison[1]
+    loci_y <- comparison[2]
+    
+    # Extract and combine data across all replicates for the loci sets
+    combined_data <- do.call(rbind, lapply(names(current_replication), function(replicate_name) {
+      replicate_data <- current_replication[[replicate_name]]
+      data.frame(
+        Replicate = replicate_name,
+        x = replicate_data[[loci_x]],
+        y = replicate_data[[loci_y]]
+      )
+    }))
+    
+    # Store data for ANOVA and T-tests
+    all_loci_values[[loci_x]] <- combined_data$x
+    all_loci_values[[loci_y]] <- combined_data$y
+    
+    # Perform KS Test
+    ks_test <- ks.test(combined_data$x, combined_data$y)
+    sink(ks_test_file, append = TRUE)
+    cat("KS Test for", loci_x, "vs", loci_y, "in", replication_name, ":\n")
+    print(ks_test)
+    cat("\n")
+    sink()
+    
+    # Perform AD Test
+    if (length(combined_data$x) > 1 && length(combined_data$y) > 1) {
+  ad_test <- kSamples::ad.test(combined_data$x, combined_data$y)
+  sink(ad_test_file, append = TRUE)
+  cat("AD Test for", loci_x, "vs", loci_y, "in", replication_name, ":\n")
+  print(ad_test)
+  cat("\n")
+  sink()
+} else {
+  sink(ad_test_file, append = TRUE)
+  cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "in", replication_name, "\n\n")
+  sink()
+}
+    
+    # Generate QQ plot
+    x_sorted <- sort(combined_data$x, na.last = TRUE)
+    y_sorted <- sort(combined_data$y, na.last = TRUE)
+    plot_data <- data.frame(x = x_sorted, y = y_sorted)
+    
+    plot <- ggplot(data = plot_data, aes(x = y, y = x)) +
+      geom_point(color = "blue") +
+      geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+      labs(
+        title = paste(loci_x, "vs", loci_y, "-", replication_name),
+        x = paste(loci_y),
+        y = paste(loci_x)
+      ) +
+      theme_minimal() +
+      coord_fixed() +
+      scale_x_continuous(limits = c(0.0, 0.1)) +
+      scale_y_continuous(limits = c(0.0, 0.1))
+    
+    file_name <- file.path(output_folder, paste0("QQ_Plot_", loci_x, "_vs_", loci_y, "_", replication_name, ".png"))
+    ggsave(filename = file_name, plot = plot, width = 6, height = 4)
+  }
+  
+  # Combine data for ANOVA and T-tests
+  loci_groups <- unlist(lapply(names(all_loci_values), function(loci) {
+    rep(loci, length(all_loci_values[[loci]]))
+  }))
+  qst_values <- unlist(all_loci_values)
+  data <- data.frame(
+    LociGroup = factor(loci_groups, levels = names(all_loci_values)),
+    QstValue = qst_values
+  )
+  
+  # Perform ANOVA
+  anova_results <- aov(QstValue ~ LociGroup, data = data)
+  sink(anova_file, append = TRUE)
+  cat("ANOVA Results for", replication_name, ":\n")
+  print(summary(anova_results))
+  cat("\n")
+  
+  # Tukey's HSD Post-Hoc Test
+  cat("Tukey HSD Results for", replication_name, ":\n")
+  tukey_results <- TukeyHSD(anova_results)
+  print(tukey_results)
+  cat("\n")
+  sink()
+  
+  # Perform T-Test
+  t_test_results <- pairwise.t.test(
+    data$QstValue,
+    data$LociGroup,
+    p.adjust.method = "bonferroni"
+  )
+  sink(ttest_file, append = TRUE)
+  cat("T-Test Results for", replication_name, ":\n")
+  print(t_test_results)
+  cat("\n")
+  sink()
+}
+```
+### between replication
+```{r}
+# Set output directory
+output_dir <- "./result/uni/maf/between_replication_qqplot/"
+if (!dir.exists(output_dir)) dir.create(output_dir)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_dir, "ks_test_results.txt")
+ad_test_file <- file.path(output_dir, "ad_test_results.txt")
+anova_file <- file.path(output_dir, "anova_results.txt")
+ttest_file <- file.path(output_dir, "t_test_results.txt")
+
+# Initialize file connections
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA Results\n")
+cat("=============\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("==============\n\n")
+sink()
+
+
+# Assuming `replication` is the nested structure
+data <- flatten_replication_data(uni_minor_replication)
+
+# Define loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_1"),
+  c("N_10", "N_10"),
+  c("N_100", "N_100"),
+  c("N_1000", "N_1000"),
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Perform statistical comparisons and save results
+for (comparison in loci_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Filter data for the two loci
+  data_x <- data %>% filter(Loci == loci_x) %>% pull(QstValue)
+  data_y <- data %>% filter(Loci == loci_y) %>% pull(QstValue)
+  
+  # Perform KS Test
+  if (length(data_x) > 1 && length(data_y) > 1) {
+    ks_test <- ks.test(data_x, data_y)
+    sink(ks_test_file, append = TRUE)
+    cat("KS Test for", loci_x, "vs", loci_y, ":\n")
+    print(ks_test)
+    cat("\n")
+    sink()
+  }
+  
+  # Perform AD Test using kSamples
+if (length(data_x) > 1 && length(data_y) > 1) {
+  ad_test <- kSamples::ad.test(data_x, data_y)
+  sink(ad_test_file, append = TRUE)
+  cat("AD Test for", loci_x, "vs", loci_y, ":\n")
+  print(ad_test)
+  cat("\n")
+  sink()
+} else {
+  sink(ad_test_file, append = TRUE)
+  cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "\n\n")
+  sink()
+}
+}
+
+# Grouped data for ANOVA and T-Test
+anova_data <- data %>%
+  filter(Loci %in% unlist(loci_comparisons)) %>%
+  group_by(Loci) %>%
+  summarise(QstValues = list(QstValue), .groups = "drop") %>%
+  unnest(cols = c(QstValues))
+
+# Perform ANOVA
+anova_results <- aov(QstValue ~ Loci, data = data)
+sink(anova_file, append = TRUE)
+cat("ANOVA Results:\n")
+print(summary(anova_results))
+cat("\n")
+sink()
+
+# Perform T-Test
+t_test_results <- pairwise.t.test(
+  data$QstValue,
+  data$Loci,
+  p.adjust.method = "bonferroni"
+)
+sink(ttest_file, append = TRUE)
+cat("T-Test Results:\n")
+print(t_test_results)
+cat("\n")
+sink()
+# Define loci comparisons for QQ plots
+qqplot_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Generate QQ plots for specified comparisons
+for (comparison in qqplot_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Filter data for the two loci
+  data_x <- data %>% filter(Loci == loci_x) %>% pull(QstValue)
+  data_y <- data %>% filter(Loci == loci_y) %>% pull(QstValue)
+  
+  if (length(data_x) > 1 && length(data_y) > 1) {
+    # Generate QQ plot
+    qqplot_data <- data.frame(
+      x = sort(data_x),
+      y = sort(data_y)
+    )
+    
+    qq_plot <- ggplot(qqplot_data, aes(x = x, y = y)) +
+      geom_point(color = "blue") +
+      geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+      labs(
+        title = paste("QQ Plot:", loci_x, "vs", loci_y),
+        x = paste(loci_x ),
+        y = paste(loci_y)
+      ) +
+      theme_minimal() +
+      coord_fixed()+
+      scale_x_continuous(limits = c(0.0, 0.1)) +
+      scale_y_continuous(limits = c(0.0, 0.1))
+    
+    # Save the QQ plot
+    qqplot_file <- file.path(output_dir, paste0("QQ_Plot_", loci_x, "_vs_", loci_y, ".png"))
+    ggsave(qqplot_file, qq_plot, width = 6, height = 6)
+  } else {
+    cat("Insufficient data for QQ Plot for", loci_x, "vs", loci_y, "\n")
+  }
+}
+```
+### average over 10 replication
+```{r}
+# Define loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Create an output folder
+output_folder <- "./result/uni/maf/average_qqplots"
+if (!dir.exists(output_folder)) dir.create(output_folder)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_folder, "ks_test_results.txt")
+ad_test_file <- file.path(output_folder, "ad_test_results.txt")
+anova_file <- file.path(output_folder, "anova_results.txt")
+ttest_file <- file.path(output_folder, "t_test_results.txt")
+
+# Initialize output files
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA and Tukey HSD Results\n")
+cat("===========================\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("================\n\n")
+sink()
+
+# Loop over loci comparisons
+for (comparison in loci_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Average values over all replications for each replicate
+  averaged_data <- do.call(rbind, lapply(names(uni_minor_replication[[1]]), function(replicate_name) {
+    # Extract replicate data across all replications
+    replicate_values <- do.call(rbind, lapply(names(uni_minor_replication), function(replication_name) {
+      uni_minor_replication[[replication_name]][[replicate_name]]
+    }))
+    
+    # Ensure data is numeric
+    numeric_values <- as.data.frame(lapply(as.data.frame(replicate_values), as.numeric))
+    
+    # Compute averages for loci_x and loci_y
+    data.frame(
+      Replicate = replicate_name,
+      x = mean(numeric_values[[loci_x]], na.rm = TRUE),
+      y = mean(numeric_values[[loci_y]], na.rm = TRUE)
+    )
+  }))
+  
+  # Sort values for quantile-quantile plotting
+  x_sorted <- sort(averaged_data$x, na.last = TRUE)
+  y_sorted <- sort(averaged_data$y, na.last = TRUE)
+  
+  # Perform Kolmogorov-Smirnov Test
+  ks_test <- ks.test(x_sorted, y_sorted)
+  sink(ks_test_file, append = TRUE)
+  cat("KS Test for", loci_x, "vs", loci_y, ":\n")
+  print(ks_test)
+  cat("\n")
+  sink()
+  
+  # Perform Anderson-Darling Test
+  if (length(x_sorted) > 1 && length(y_sorted) > 1) {
+  ad_test <- kSamples::ad.test(x_sorted, y_sorted)
+  sink(ad_test_file, append = TRUE)
+  cat("AD Test for", loci_x, "vs", loci_y, ":\n")
+  print(ad_test)
+  cat("\n")
+  sink()
+} else {
+  sink(ad_test_file, append = TRUE)
+  cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "\n\n")
+  sink()
+}
+  
+   # Combine data for ANOVA and t-tests
+  combined_data <- data.frame(
+    Group = rep(c(loci_x, loci_y), each = length(x_sorted)),
+    Value = c(x_sorted, y_sorted)
+  )
+  
+  # Perform ANOVA
+  anova_results <- aov(Value ~ Group, data = combined_data)
+  sink(anova_file, append = TRUE)
+  cat("ANOVA Results for", loci_x, "vs", loci_y, ":\n")
+  print(summary(anova_results))
+  cat("\n")
+  
+  # Tukey's HSD Post-Hoc Test
+  cat("Tukey HSD Results for", loci_x, "vs", loci_y, ":\n")
+  tukey_results <- TukeyHSD(anova_results)
+  print(tukey_results)
+  cat("\n")
+  sink()
+  
+  # Perform t-test
+  t_test_results <- t.test(x_sorted, y_sorted)
+  sink(ttest_file, append = TRUE)
+  cat("T-Test Results for", loci_x, "vs", loci_y, ":\n")
+  print(t_test_results)
+  cat("\n")
+  sink()
+  
+  # Create a data frame for plotting
+  plot_data <- data.frame(x = x_sorted, y = y_sorted)
+  
+  # Generate QQ plot
+  plot <- ggplot(data = plot_data, aes(x = y, y = x)) +
+    geom_point(color = "blue") +
+    geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+    labs(
+      title = paste("Averaged QQ Plot:", loci_x, "vs", loci_y),
+      x = paste( loci_y),
+      y = paste( loci_x)
+    ) +
+    theme_minimal() +
+    coord_fixed() +
+    scale_x_continuous(limits = c(0.0, 0.04)) +
+    scale_y_continuous(limits = c(0.0, 0.04))
+  
+  # Save the plot
+  file_name <- file.path(output_folder, paste0("Averaged_QQ_Plot_", loci_x, "_vs_", loci_y, ".png"))
+  ggsave(filename = file_name, plot = plot, width = 6, height = 4)
+}
+
+```
+# L-shaped
+```{r}
+# type of distribution used
+test <- rpareto(1000, scale = 0.1, shape = 2)
+
+hist(test, breaks = 1000, col = "lightgreen", main = "Pareto Distribution of Effect Sizes",
+     xlab = "Effect Size", ylab = "Frequency", probability = TRUE)
+#lines(density(test), col = "darkgreen", lwd = 2)
+```
+## without maf
+```{r}
+loci_counts <- c(1, 10, 100, 1000)
+l_replication <- list()
+
+for (number in 1:10) {
+  #set.seed(seed_value + number)  # Ensure unique seed per replication
+  qst_result_norm <- list()
+  
+  for (replicate in seq_along(data_numeric_list)) {
+    print(paste0("Processing replicate: ", replicate, " replication: ", number))
+    
+    # Split replicate into 8 populations
+    splited_pop <- split_into_pop(data_numeric_list[[replicate]])
+    
+    # Initialize Qst results for the replicate
+    qst_resutl <- list()
+    
+    for (loci in loci_counts) {
+      #set.seed(seed_value + number + loci + replicate)  # Unique seed for loci, replicate, and replication
+      
+      # Compute phenotype for the 8 populations
+      phenotype <- phenotype_calc_l(splited_pop, loci)
+      qst <- Qst_cal(phenotype)
+      qst_resutl[[paste0("N_", loci)]] <- qst
+    }
+    
+    # Store Qst results for the replicate
+    qst_result_norm[[paste0("replicate_", replicate)]] <- qst_resutl
+  }
+  
+  # Store Qst results for the replication
+  l_replication[[paste0("replication_", number)]] <- qst_result_norm
+}
+```
+### within replicate
+```{r}
+# Define the output folder and create it if necessary
+output_folder <- "./result/l/wo_maf/within_replication_qqplot"
+if (!dir.exists(output_folder)) {
+  dir.create(output_folder, recursive = TRUE)  # Create folder if it doesn't exist
+}
+
+# Loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_folder, "ks_test_results.txt")
+ad_test_file <- file.path(output_folder, "ad_test_results.txt")
+anova_file <- file.path(output_folder, "anova_results.txt")
+ttest_file <- file.path(output_folder, "t_test_results.txt")
+
+# Initialize file connections
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA and Tukey HSD Results\n")
+cat("===========================\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("================\n\n")
+sink()
+
+# Loop over replications
+for (replication_name in names(l_replication)) {
+  current_replication <- l_replication[[replication_name]]  # Extract current replication
+  
+  # Initialize data for ANOVA and T-tests
+  all_loci_values <- list()
+  
+  # Loop over loci comparisons
+  for (comparison in loci_comparisons) {
+    loci_x <- comparison[1]
+    loci_y <- comparison[2]
+    
+    # Extract and combine data across all replicates for the loci sets
+    combined_data <- do.call(rbind, lapply(names(current_replication), function(replicate_name) {
+      replicate_data <- current_replication[[replicate_name]]
+      data.frame(
+        Replicate = replicate_name,
+        x = replicate_data[[loci_x]],
+        y = replicate_data[[loci_y]]
+      )
+    }))
+    
+    # Store data for ANOVA and T-tests
+    all_loci_values[[loci_x]] <- combined_data$x
+    all_loci_values[[loci_y]] <- combined_data$y
+    
+    # Perform KS Test
+    ks_test <- ks.test(combined_data$x, combined_data$y)
+    sink(ks_test_file, append = TRUE)
+    cat("KS Test for", loci_x, "vs", loci_y, "in", replication_name, ":\n")
+    print(ks_test)
+    cat("\n")
+    sink()
+    
+    # Perform AD Test
+    if (length(combined_data$x) > 1 && length(combined_data$y) > 1) {
+  ad_test <- kSamples::ad.test(combined_data$x, combined_data$y)
+  sink(ad_test_file, append = TRUE)
+  cat("AD Test for", loci_x, "vs", loci_y, "in", replication_name, ":\n")
+  print(ad_test)
+  cat("\n")
+  sink()
+} else {
+  sink(ad_test_file, append = TRUE)
+  cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "in", replication_name, "\n\n")
+  sink()
+}
+    
+    # Generate QQ plot
+    x_sorted <- sort(combined_data$x, na.last = TRUE)
+    y_sorted <- sort(combined_data$y, na.last = TRUE)
+    plot_data <- data.frame(x = x_sorted, y = y_sorted)
+    
+    plot <- ggplot(data = plot_data, aes(x = y, y = x)) +
+      geom_point(color = "blue") +
+      geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+      labs(
+        title = paste(loci_x, "vs", loci_y, "-", replication_name),
+        x = paste(loci_y),
+        y = paste(loci_x)
+      ) +
+      theme_minimal() +
+      coord_fixed() +
+      scale_x_continuous(limits = c(0.0, 0.1)) +
+      scale_y_continuous(limits = c(0.0, 0.1))
+    
+    file_name <- file.path(output_folder, paste0("QQ_Plot_", loci_x, "_vs_", loci_y, "_", replication_name, ".png"))
+    ggsave(filename = file_name, plot = plot, width = 6, height = 4)
+  }
+  
+  # Combine data for ANOVA and T-tests
+  loci_groups <- unlist(lapply(names(all_loci_values), function(loci) {
+    rep(loci, length(all_loci_values[[loci]]))
+  }))
+  qst_values <- unlist(all_loci_values)
+  data <- data.frame(
+    LociGroup = factor(loci_groups, levels = names(all_loci_values)),
+    QstValue = qst_values
+  )
+  
+  # Perform ANOVA
+  anova_results <- aov(QstValue ~ LociGroup, data = data)
+  sink(anova_file, append = TRUE)
+  cat("ANOVA Results for", replication_name, ":\n")
+  print(summary(anova_results))
+  cat("\n")
+  
+  # Tukey's HSD Post-Hoc Test
+  cat("Tukey HSD Results for", replication_name, ":\n")
+  tukey_results <- TukeyHSD(anova_results)
+  print(tukey_results)
+  cat("\n")
+  sink()
+  
+  # Perform T-Test
+  t_test_results <- pairwise.t.test(
+    data$QstValue,
+    data$LociGroup,
+    p.adjust.method = "bonferroni"
+  )
+  sink(ttest_file, append = TRUE)
+  cat("T-Test Results for", replication_name, ":\n")
+  print(t_test_results)
+  cat("\n")
+  sink()
+}
+```
+
+### between
+```{r}
+# Set output directory
+output_dir <- "./result/l/wo_maf/between_replication_qqplot/"
+if (!dir.exists(output_dir)) dir.create(output_dir)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_dir, "ks_test_results.txt")
+ad_test_file <- file.path(output_dir, "ad_test_results.txt")
+anova_file <- file.path(output_dir, "anova_results.txt")
+ttest_file <- file.path(output_dir, "t_test_results.txt")
+
+# Initialize file connections
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA Results\n")
+cat("=============\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("==============\n\n")
+sink()
+
+
+# Assuming `replication` is the nested structure
+data <- flatten_replication_data(l_replication)
+
+# Define loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_1"),
+  c("N_10", "N_10"),
+  c("N_100", "N_100"),
+  c("N_1000", "N_1000"),
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Perform statistical comparisons and save results
+for (comparison in loci_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Filter data for the two loci
+  data_x <- data %>% filter(Loci == loci_x) %>% pull(QstValue)
+  data_y <- data %>% filter(Loci == loci_y) %>% pull(QstValue)
+  
+  # Perform KS Test
+  if (length(data_x) > 1 && length(data_y) > 1) {
+    ks_test <- ks.test(data_x, data_y)
+    sink(ks_test_file, append = TRUE)
+    cat("KS Test for", loci_x, "vs", loci_y, ":\n")
+    print(ks_test)
+    cat("\n")
+    sink()
+  }
+  
+  # Perform AD Test using kSamples
+if (length(data_x) > 1 && length(data_y) > 1) {
+  ad_test <- kSamples::ad.test(data_x, data_y)
+  sink(ad_test_file, append = TRUE)
+  cat("AD Test for", loci_x, "vs", loci_y, ":\n")
+  print(ad_test)
+  cat("\n")
+  sink()
+} else {
+  sink(ad_test_file, append = TRUE)
+  cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "\n\n")
+  sink()
+}
+}
+
+# Grouped data for ANOVA and T-Test
+anova_data <- data %>%
+  filter(Loci %in% unlist(loci_comparisons)) %>%
+  group_by(Loci) %>%
+  summarise(QstValues = list(QstValue), .groups = "drop") %>%
+  unnest(cols = c(QstValues))
+
+# Perform ANOVA
+anova_results <- aov(QstValue ~ Loci, data = data)
+sink(anova_file, append = TRUE)
+cat("ANOVA Results:\n")
+print(summary(anova_results))
+cat("\n")
+sink()
+
+# Perform T-Test
+t_test_results <- pairwise.t.test(
+  data$QstValue,
+  data$Loci,
+  p.adjust.method = "bonferroni"
+)
+sink(ttest_file, append = TRUE)
+cat("T-Test Results:\n")
+print(t_test_results)
+cat("\n")
+sink()
+# Define loci comparisons for QQ plots
+qqplot_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Generate QQ plots for specified comparisons
+for (comparison in qqplot_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Filter data for the two loci
+  data_x <- data %>% filter(Loci == loci_x) %>% pull(QstValue)
+  data_y <- data %>% filter(Loci == loci_y) %>% pull(QstValue)
+  
+  if (length(data_x) > 1 && length(data_y) > 1) {
+    # Generate QQ plot
+    qqplot_data <- data.frame(
+      x = sort(data_x),
+      y = sort(data_y)
+    )
+    
+    qq_plot <- ggplot(qqplot_data, aes(x = x, y = y)) +
+      geom_point(color = "blue") +
+      geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+      labs(
+        title = paste("QQ Plot:", loci_x, "vs", loci_y),
+        x = paste(loci_x ),
+        y = paste(loci_y)
+      ) +
+      theme_minimal() +
+      coord_fixed()+
+      scale_x_continuous(limits = c(0.0, 0.1)) +
+      scale_y_continuous(limits = c(0.0, 0.1))
+    
+    # Save the QQ plot
+    qqplot_file <- file.path(output_dir, paste0("QQ_Plot_", loci_x, "_vs_", loci_y, ".png"))
+    ggsave(qqplot_file, qq_plot, width = 6, height = 6)
+  } else {
+    cat("Insufficient data for QQ Plot for", loci_x, "vs", loci_y, "\n")
+  }
+}
+
+```
+### average over replication
+```{r}
+# Define loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Create an output folder
+output_folder <- "./result/l/wo_maf//average_qqplots"
+if (!dir.exists(output_folder)) dir.create(output_folder)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_folder, "ks_test_results.txt")
+ad_test_file <- file.path(output_folder, "ad_test_results.txt")
+anova_file <- file.path(output_folder, "anova_results.txt")
+ttest_file <- file.path(output_folder, "t_test_results.txt")
+
+# Initialize output files
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA and Tukey HSD Results\n")
+cat("===========================\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("================\n\n")
+sink()
+
+# Loop over loci comparisons
+for (comparison in loci_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Average values over all replications for each replicate
+  averaged_data <- do.call(rbind, lapply(names(l_replication[[1]]), function(replicate_name) {
+    # Extract replicate data across all replications
+    replicate_values <- do.call(rbind, lapply(names(l_replication), function(replication_name) {
+      l_replication[[replication_name]][[replicate_name]]
+    }))
+    
+    # Ensure data is numeric
+    numeric_values <- as.data.frame(lapply(as.data.frame(replicate_values), as.numeric))
+    
+    # Compute averages for loci_x and loci_y
+    data.frame(
+      Replicate = replicate_name,
+      x = mean(numeric_values[[loci_x]], na.rm = TRUE),
+      y = mean(numeric_values[[loci_y]], na.rm = TRUE)
+    )
+  }))
+  
+  # Sort values for quantile-quantile plotting
+  x_sorted <- sort(averaged_data$x, na.last = TRUE)
+  y_sorted <- sort(averaged_data$y, na.last = TRUE)
+  
+  # Perform Kolmogorov-Smirnov Test
+  ks_test <- ks.test(x_sorted, y_sorted)
+  sink(ks_test_file, append = TRUE)
+  cat("KS Test for", loci_x, "vs", loci_y, ":\n")
+  print(ks_test)
+  cat("\n")
+  sink()
+  
+  # Perform Anderson-Darling Test
+  if (length(x_sorted) > 1 && length(y_sorted) > 1) {
+  ad_test <- kSamples::ad.test(x_sorted, y_sorted)
+  sink(ad_test_file, append = TRUE)
+  cat("AD Test for", loci_x, "vs", loci_y, ":\n")
+  print(ad_test)
+  cat("\n")
+  sink()
+} else {
+  sink(ad_test_file, append = TRUE)
+  cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "\n\n")
+  sink()
+}
+  
+   # Combine data for ANOVA and t-tests
+  combined_data <- data.frame(
+    Group = rep(c(loci_x, loci_y), each = length(x_sorted)),
+    Value = c(x_sorted, y_sorted)
+  )
+  
+  # Perform ANOVA
+  anova_results <- aov(Value ~ Group, data = combined_data)
+  sink(anova_file, append = TRUE)
+  cat("ANOVA Results for", loci_x, "vs", loci_y, ":\n")
+  print(summary(anova_results))
+  cat("\n")
+  
+  # Tukey's HSD Post-Hoc Test
+  cat("Tukey HSD Results for", loci_x, "vs", loci_y, ":\n")
+  tukey_results <- TukeyHSD(anova_results)
+  print(tukey_results)
+  cat("\n")
+  sink()
+  
+  # Perform t-test
+  t_test_results <- t.test(x_sorted, y_sorted)
+  sink(ttest_file, append = TRUE)
+  cat("T-Test Results for", loci_x, "vs", loci_y, ":\n")
+  print(t_test_results)
+  cat("\n")
+  sink()
+  
+  # Create a data frame for plotting
+  plot_data <- data.frame(x = x_sorted, y = y_sorted)
+  
+  # Generate QQ plot
+  plot <- ggplot(data = plot_data, aes(x = y, y = x)) +
+    geom_point(color = "blue") +
+    geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+    labs(
+      title = paste("Averaged QQ Plot:", loci_x, "vs", loci_y),
+      x = paste(loci_y),
+      y = paste(loci_x)
+    ) +
+    theme_minimal() +
+    coord_fixed() +
+    scale_x_continuous(limits = c(0.01, 0.04)) +
+    scale_y_continuous(limits = c(0.01, 0.04))
+  
+  # Save the plot
+  file_name <- file.path(output_folder, paste0("Averaged_QQ_Plot_", loci_x, "_vs_", loci_y, ".png"))
+  ggsave(filename = file_name, plot = plot, width = 6, height = 4)
+}
+```
+
+
+
+## with maf
+```{r}
+loci_counts <- c(1, 10, 100, 1000)
+l_minor_replication <- list()
+
+for (number in 1:10) {
+  #set.seed(seed_value + number)  # Ensure unique seed per replication
+  qst_result_norm <- list()
+  
+  for (replicate in seq_along(minor_data_list)) {
+    print(paste0("Processing replicate: ", replicate, " replication: ", number))
+    
+    # Split replicate into 8 populations
+    splited_pop <- split_into_pop(minor_data_list[[replicate]])
+    
+    # Initialize Qst results for the replicate
+    qst_resutl <- list()
+    
+    for (loci in loci_counts) {
+      #set.seed(seed_value + number + loci + replicate)  # Unique seed for loci, replicate, and replication
+      
+      # Compute phenotype for the 8 populations
+      phenotype <- phenotype_calc_l(splited_pop, loci)
+      qst <- Qst_cal(phenotype)
+      qst_resutl[[paste0("N_", loci)]] <- qst
+    }
+    
+    # Store Qst results for the replicate
+    qst_result_norm[[paste0("replicate_", replicate)]] <- qst_resutl
+  }
+  
+  # Store Qst results for the replication
+  l_minor_replication[[paste0("replication_", number)]] <- qst_result_norm
+}
+```
+
+### within replication
+```{r}
+# Define the output folder and create it if necessary
+output_folder <- "./result/l/maf/within_replication_qqplot"
+if (!dir.exists(output_folder)) {
+  dir.create(output_folder, recursive = TRUE)  # Create folder if it doesn't exist
+}
+
+# Loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_folder, "ks_test_results.txt")
+ad_test_file <- file.path(output_folder, "ad_test_results.txt")
+anova_file <- file.path(output_folder, "anova_results.txt")
+ttest_file <- file.path(output_folder, "t_test_results.txt")
+
+# Initialize file connections
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA and Tukey HSD Results\n")
+cat("===========================\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("================\n\n")
+sink()
+
+# Loop over replications
+for (replication_name in names(l_minor_replication)) {
+  current_replication <- l_minor_replication[[replication_name]]  # Extract current replication
+  
+  # Initialize data for ANOVA and T-tests
+  all_loci_values <- list()
+  
+  # Loop over loci comparisons
+  for (comparison in loci_comparisons) {
+    loci_x <- comparison[1]
+    loci_y <- comparison[2]
+    
+    # Extract and combine data across all replicates for the loci sets
+    combined_data <- do.call(rbind, lapply(names(current_replication), function(replicate_name) {
+      replicate_data <- current_replication[[replicate_name]]
+      data.frame(
+        Replicate = replicate_name,
+        x = replicate_data[[loci_x]],
+        y = replicate_data[[loci_y]]
+      )
+    }))
+    
+    # Store data for ANOVA and T-tests
+    all_loci_values[[loci_x]] <- combined_data$x
+    all_loci_values[[loci_y]] <- combined_data$y
+    
+    # Perform KS Test
+    ks_test <- ks.test(combined_data$x, combined_data$y)
+    sink(ks_test_file, append = TRUE)
+    cat("KS Test for", loci_x, "vs", loci_y, "in", replication_name, ":\n")
+    print(ks_test)
+    cat("\n")
+    sink()
+    
+    # Perform AD Test
+    if (length(combined_data$x) > 1 && length(combined_data$y) > 1) {
+  ad_test <- kSamples::ad.test(combined_data$x, combined_data$y)
+  sink(ad_test_file, append = TRUE)
+  cat("AD Test for", loci_x, "vs", loci_y, "in", replication_name, ":\n")
+  print(ad_test)
+  cat("\n")
+  sink()
+} else {
+  sink(ad_test_file, append = TRUE)
+  cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "in", replication_name, "\n\n")
+  sink()
+}
+    
+    # Generate QQ plot
+    x_sorted <- sort(combined_data$x, na.last = TRUE)
+    y_sorted <- sort(combined_data$y, na.last = TRUE)
+    plot_data <- data.frame(x = x_sorted, y = y_sorted)
+    
+    plot <- ggplot(data = plot_data, aes(x = y, y = x)) +
+      geom_point(color = "blue") +
+      geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+      labs(
+        title = paste(loci_x, "vs", loci_y, "-", replication_name),
+        x = paste(loci_y),
+        y = paste(loci_x)
+      ) +
+      theme_minimal() +
+      coord_fixed() +
+      scale_x_continuous(limits = c(0.0, 0.1)) +
+      scale_y_continuous(limits = c(0.0, 0.1))
+    
+    file_name <- file.path(output_folder, paste0("QQ_Plot_", loci_x, "_vs_", loci_y, "_", replication_name, ".png"))
+    ggsave(filename = file_name, plot = plot, width = 6, height = 4)
+  }
+  
+  # Combine data for ANOVA and T-tests
+  loci_groups <- unlist(lapply(names(all_loci_values), function(loci) {
+    rep(loci, length(all_loci_values[[loci]]))
+  }))
+  qst_values <- unlist(all_loci_values)
+  data <- data.frame(
+    LociGroup = factor(loci_groups, levels = names(all_loci_values)),
+    QstValue = qst_values
+  )
+  
+  # Perform ANOVA
+  anova_results <- aov(QstValue ~ LociGroup, data = data)
+  sink(anova_file, append = TRUE)
+  cat("ANOVA Results for", replication_name, ":\n")
+  print(summary(anova_results))
+  cat("\n")
+  
+  # Tukey's HSD Post-Hoc Test
+  cat("Tukey HSD Results for", replication_name, ":\n")
+  tukey_results <- TukeyHSD(anova_results)
+  print(tukey_results)
+  cat("\n")
+  sink()
+  
+  # Perform T-Test
+  t_test_results <- pairwise.t.test(
+    data$QstValue,
+    data$LociGroup,
+    p.adjust.method = "bonferroni"
+  )
+  sink(ttest_file, append = TRUE)
+  cat("T-Test Results for", replication_name, ":\n")
+  print(t_test_results)
+  cat("\n")
+  sink()
+}
+```
+
+
+### between replication
+```{r}
+# Set output directory
+output_dir <- "./result/l/maf/between_replication_qqplot/"
+if (!dir.exists(output_dir)) dir.create(output_dir)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_dir, "ks_test_results.txt")
+ad_test_file <- file.path(output_dir, "ad_test_results.txt")
+anova_file <- file.path(output_dir, "anova_results.txt")
+ttest_file <- file.path(output_dir, "t_test_results.txt")
+
+# Initialize file connections
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA Results\n")
+cat("=============\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("==============\n\n")
+sink()
+
+
+# Assuming `replication` is the nested structure
+data <- flatten_replication_data(l_minor_replication)
+
+# Define loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_1"),
+  c("N_10", "N_10"),
+  c("N_100", "N_100"),
+  c("N_1000", "N_1000"),
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Perform statistical comparisons and save results
+for (comparison in loci_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Filter data for the two loci
+  data_x <- data %>% filter(Loci == loci_x) %>% pull(QstValue)
+  data_y <- data %>% filter(Loci == loci_y) %>% pull(QstValue)
+  
+  # Perform KS Test
+  if (length(data_x) > 1 && length(data_y) > 1) {
+    ks_test <- ks.test(data_x, data_y)
+    sink(ks_test_file, append = TRUE)
+    cat("KS Test for", loci_x, "vs", loci_y, ":\n")
+    print(ks_test)
+    cat("\n")
+    sink()
+  }
+  
+  # Perform AD Test using kSamples
+if (length(data_x) > 1 && length(data_y) > 1) {
+  ad_test <- kSamples::ad.test(data_x, data_y)
+  sink(ad_test_file, append = TRUE)
+  cat("AD Test for", loci_x, "vs", loci_y, ":\n")
+  print(ad_test)
+  cat("\n")
+  sink()
+} else {
+  sink(ad_test_file, append = TRUE)
+  cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "\n\n")
+  sink()
+}
+}
+
+# Grouped data for ANOVA and T-Test
+anova_data <- data %>%
+  filter(Loci %in% unlist(loci_comparisons)) %>%
+  group_by(Loci) %>%
+  summarise(QstValues = list(QstValue), .groups = "drop") %>%
+  unnest(cols = c(QstValues))
+
+# Perform ANOVA
+anova_results <- aov(QstValue ~ Loci, data = data)
+sink(anova_file, append = TRUE)
+cat("ANOVA Results:\n")
+print(summary(anova_results))
+cat("\n")
+sink()
+
+# Perform T-Test
+t_test_results <- pairwise.t.test(
+  data$QstValue,
+  data$Loci,
+  p.adjust.method = "bonferroni"
+)
+sink(ttest_file, append = TRUE)
+cat("T-Test Results:\n")
+print(t_test_results)
+cat("\n")
+sink()
+# Define loci comparisons for QQ plots
+qqplot_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Generate QQ plots for specified comparisons
+for (comparison in qqplot_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Filter data for the two loci
+  data_x <- data %>% filter(Loci == loci_x) %>% pull(QstValue)
+  data_y <- data %>% filter(Loci == loci_y) %>% pull(QstValue)
+  
+  if (length(data_x) > 1 && length(data_y) > 1) {
+    # Generate QQ plot
+    qqplot_data <- data.frame(
+      x = sort(data_x),
+      y = sort(data_y)
+    )
+    
+    qq_plot <- ggplot(qqplot_data, aes(x = x, y = y)) +
+      geom_point(color = "blue") +
+      geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+      labs(
+        title = paste("QQ Plot:", loci_x, "vs", loci_y),
+        x = paste(loci_x ),
+        y = paste(loci_y)
+      ) +
+      theme_minimal() +
+      coord_fixed()+
+      scale_x_continuous(limits = c(0.0, 0.1)) +
+      scale_y_continuous(limits = c(0.0, 0.1))
+    
+    # Save the QQ plot
+    qqplot_file <- file.path(output_dir, paste0("QQ_Plot_", loci_x, "_vs_", loci_y, ".png"))
+    ggsave(qqplot_file, qq_plot, width = 6, height = 6)
+  } else {
+    cat("Insufficient data for QQ Plot for", loci_x, "vs", loci_y, "\n")
+  }
+}
+```
+
+
+## average
+```{r}
+# Define loci comparisons
+loci_comparisons <- list(
+  c("N_1", "N_10"),
+  c("N_1", "N_100"),
+  c("N_1", "N_1000"),
+  c("N_10", "N_100"),
+  c("N_10", "N_1000"),
+  c("N_100", "N_1000")
+)
+
+# Create an output folder
+output_folder <- "./result/l/maf/average_qqplots"
+if (!dir.exists(output_folder)) dir.create(output_folder)
+
+# Output files for statistical results
+ks_test_file <- file.path(output_folder, "ks_test_results.txt")
+ad_test_file <- file.path(output_folder, "ad_test_results.txt")
+anova_file <- file.path(output_folder, "anova_results.txt")
+ttest_file <- file.path(output_folder, "t_test_results.txt")
+
+# Initialize output files
+sink(ks_test_file, append = FALSE)
+cat("Kolmogorov-Smirnov Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(ad_test_file, append = FALSE)
+cat("Anderson-Darling Test Results\n")
+cat("===============================\n\n")
+sink()
+
+sink(anova_file, append = FALSE)
+cat("ANOVA and Tukey HSD Results\n")
+cat("===========================\n\n")
+sink()
+
+sink(ttest_file, append = FALSE)
+cat("T-Test Results\n")
+cat("================\n\n")
+sink()
+
+# Loop over loci comparisons
+for (comparison in loci_comparisons) {
+  loci_x <- comparison[1]
+  loci_y <- comparison[2]
+  
+  # Average values over all replications for each replicate
+  averaged_data <- do.call(rbind, lapply(names(l_minor_replication[[1]]), function(replicate_name) {
+    # Extract replicate data across all replications
+    replicate_values <- do.call(rbind, lapply(names(l_minor_replication), function(replication_name) {
+      l_minor_replication[[replication_name]][[replicate_name]]
+    }))
+    
+    # Ensure data is numeric
+    numeric_values <- as.data.frame(lapply(as.data.frame(replicate_values), as.numeric))
+    
+    # Compute averages for loci_x and loci_y
+    data.frame(
+      Replicate = replicate_name,
+      x = mean(numeric_values[[loci_x]], na.rm = TRUE),
+      y = mean(numeric_values[[loci_y]], na.rm = TRUE)
+    )
+  }))
+  
+  # Sort values for quantile-quantile plotting
+  x_sorted <- sort(averaged_data$x, na.last = TRUE)
+  y_sorted <- sort(averaged_data$y, na.last = TRUE)
+  
+  # Perform Kolmogorov-Smirnov Test
+  ks_test <- ks.test(x_sorted, y_sorted)
+  sink(ks_test_file, append = TRUE)
+  cat("KS Test for", loci_x, "vs", loci_y, ":\n")
+  print(ks_test)
+  cat("\n")
+  sink()
+  
+  # Perform Anderson-Darling Test
+  if (length(x_sorted) > 1 && length(y_sorted) > 1) {
+  ad_test <- kSamples::ad.test(x_sorted, y_sorted)
+  sink(ad_test_file, append = TRUE)
+  cat("AD Test for", loci_x, "vs", loci_y, ":\n")
+  print(ad_test)
+  cat("\n")
+  sink()
+} else {
+  sink(ad_test_file, append = TRUE)
+  cat("Insufficient data for AD Test for", loci_x, "vs", loci_y, "\n\n")
+  sink()
+}
+  
+   # Combine data for ANOVA and t-tests
+  combined_data <- data.frame(
+    Group = rep(c(loci_x, loci_y), each = length(x_sorted)),
+    Value = c(x_sorted, y_sorted)
+  )
+  
+  # Perform ANOVA
+  anova_results <- aov(Value ~ Group, data = combined_data)
+  sink(anova_file, append = TRUE)
+  cat("ANOVA Results for", loci_x, "vs", loci_y, ":\n")
+  print(summary(anova_results))
+  cat("\n")
+  
+  # Tukey's HSD Post-Hoc Test
+  cat("Tukey HSD Results for", loci_x, "vs", loci_y, ":\n")
+  tukey_results <- TukeyHSD(anova_results)
+  print(tukey_results)
+  cat("\n")
+  sink()
+  
+  # Perform t-test
+  t_test_results <- t.test(x_sorted, y_sorted)
+  sink(ttest_file, append = TRUE)
+  cat("T-Test Results for", loci_x, "vs", loci_y, ":\n")
+  print(t_test_results)
+  cat("\n")
+  sink()
+  
+  # Create a data frame for plotting
+  plot_data <- data.frame(x = x_sorted, y = y_sorted)
+  
+  # Generate QQ plot
+  plot <- ggplot(data = plot_data, aes(x = y, y = x)) +
+    geom_point(color = "blue") +
+    geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+    labs(
+      title = paste("Averaged QQ Plot:", loci_x, "vs", loci_y),
+      x = paste( loci_y),
+      y = paste( loci_x)
+    ) +
+    theme_minimal() +
+    coord_fixed() +
+    scale_x_continuous(limits = c(0.0, 0.1)) +
+    scale_y_continuous(limits = c(0.0, 0.1))
+  
+  # Save the plot
+  file_name <- file.path(output_folder, paste0("Averaged_QQ_Plot_", loci_x, "_vs_", loci_y, ".png"))
+  ggsave(filename = file_name, plot = plot, width = 6, height = 4)
+}
+
+```
+
+
+
+# FST
+```{r}
+transposed_num <- as.matrix(t(data_num[-1]))
+str(transposed_num)
+colnames(transposed_num) <- data_num$RowID      # Use RowID as column names
+rownames(transposed_num) <- colnames(data_num)[-1]
+
+# Create a vector of population identifiers
+population_vector <- c(rep("pop1", 20), rep("pop2", 20), rep("pop3", 20), rep("pop4", 20), rep("pop5", 20), rep("pop6", 20), rep("pop7", 20), rep("pop8", 20) )
+
+# Randomly sample one column
+random_col <- sample(ncol(transposed_num), 1)  # Randomly select a column index
+sampled_column <- transposed_num[, random_col] # Extract the column
+
+wc_data <- data.frame(
+  pop = population_vector,       # Population vector
+  locus1 = sampled_column        # Sampled column data
+)
+fst <- wc(wc_data)
+
+print(fst)
+```

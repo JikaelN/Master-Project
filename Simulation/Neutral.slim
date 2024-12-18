@@ -36,7 +36,7 @@ initialize() {
 2000 late() { 
     // Collect genomes from all subpopulations into a single list
     genomes = c();
-    for (i in 0:(subpopCount - 1)) {
+    for (i in 0:(sim.subpopulations.size() - 1)) {
         genomes = c(genomes, sim.subpopulations[i].sampleIndividuals(20).genomes);
     }
     

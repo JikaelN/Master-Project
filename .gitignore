@@ -1,3 +1,5 @@
 *.vcf
 *.txt
 *.png
+.Rproj.user
+*.csv
