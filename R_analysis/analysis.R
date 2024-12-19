@@ -26,7 +26,7 @@ input_dir_path <- "./data/neutral_01"
 wo_MAF <- process_vcf(input_dir_path)
 MAF <-  maf(wo_MAF)
 
-normal_test <- norm_phenotype(wo_MAF)
+normally_dist <- norm_phenotype(wo_MAF)
 #fst_result <- wc(sampled_df)
 #fst_value <- fst_result$FST
 #fst_value
