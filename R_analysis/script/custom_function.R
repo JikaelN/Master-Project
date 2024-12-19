@@ -5,13 +5,24 @@ if (!require("vcfR")) {
   library(vcfR)
 }
 
-## import vcf gt data into df
-import_vcf <- function(directory) {
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+
+
+# Process the vcf into df column = loci, row = indiv, with pop attribution
+# and genetic info as 0, 1, 2 where 0 = homozygous allele A, 1 = heterozygous, 2 = homozygous allele B
+process_vcf <- function(directory) {
   replicate_no <- 1
-  data_list <- list()
+  processed_data_list <- list()
   
-  for (vcf in directory) {
+  # List all VCF files in the directory
+  vcfs <- list.files(path = directory, full.names = TRUE, pattern = '\\.vcf$')
+  population <- rep(1:8, each = 20)  # 8 populations, 20 individuals each
+  
+  for (vcf in vcfs) {
     print(paste0("Processing: ", vcf))
+    
     if (!file.exists(vcf)) {
       warning(paste("File does not exist:", vcf))
       next
@@ -35,151 +46,186 @@ import_vcf <- function(directory) {
       # Rename columns for clarity
       colnames(df)[-1] <- paste0("i", seq_len(ncol(df) - 1))
       
+      # Convert genotype data to numeric values
+      df_numeric <- cbind(
+        RowID = df[, 1],  # Keep the first column as is
+        as.data.frame(apply(df[, -1], 2, function(col) {
+          col <- gsub("0\\|0", "0", col)  # Replace "0|0" with "0"
+          col <- gsub("1\\|0|0\\|1", "1", col)  # Replace "1|0" or "0|1" with "1"
+          col <- gsub("1\\|1", "2", col)  # Replace "1|1" with "2"
+          as.numeric(col)  # Convert to numeric, introduce NA for invalid values
+        }))
+      )
+      
+      # Ensure the number of rows matches the original
+      if (nrow(df_numeric) != nrow(df)) {
+        cat("Mismatch detected!\n")
+        cat("Original data frame dimensions:", nrow(df), ncol(df), "\n")
+        cat("Numeric data frame dimensions:", nrow(df_numeric), ncol(df_numeric), "\n")
+        stop("Mismatch between row names and number of rows in df_numeric!")
+      }
+      
+      
+      # Transform df into df usable with hierfstat
+      df_numeric <- t(df_numeric) #trasnpose
+      df_numeric <- as.data.frame(df_numeric)
+      names(df_numeric) <- lapply(df_numeric[1,], as.character) # locus as column
+      df_numeric <- df_numeric[-1,] # remove locus row
+      df_numeric[sapply(df_numeric, is.character)] <- lapply(df_numeric[sapply(df_numeric, is.character)], as.numeric) #convert data chr to numeric
+      df_numeric <- df_numeric %>% #add population column
+        mutate(pop = rep(1:8, each = 20))
+      df_numeric <- df_numeric[, c(ncol(df_numeric), 1:(ncol(df_numeric) - 1))]
+      
       # Store the processed data frame in the list
-      data_list[[replicate_no]] <- df
-      names(data_list)[replicate_no] <- basename(vcf)
+      
+      processed_data_list[[paste0("replicate ",replicate_no)]] <- df_numeric
       replicate_no <- replicate_no + 1
+      
     }, error = function(e) {
       message(paste("Error processing", vcf, ":", e$message))
     })
   }
   
-  if (length(data_list) == 0) {
+  if (length(processed_data_list) == 0) {
     warning("No data was processed successfully.")
     return(NULL)
   }
   
-  return(data_list)
-}
-
-
-### Convert GT information to numeric (0|0 = 0, 0|1 or 1|0 = 1 and 1|1 = 2)
-data_to_numeric <- function(df) {
-  # If empty
-  if (is.null(df) || nrow(df) == 0) {
-    stop("Input data frame is empty or invalid!")
-  }
-  
-  # Replace genotypes with numeric values
-  df_numeric <- cbind(
-    RowID = df[, 1],  # Keep the first column as is
-    as.data.frame(apply(df[, -1], 2, function(col) {  # Apply conversion only to the remaining columns
-      col <- gsub("0\\|0", "0", col)  # Replace "0|0" with "0"
-      col <- gsub("1\\|0|0\\|1", "1", col)  # Replace "1|0" or "0|1" with "1"
-      col <- gsub("1\\|1", "2", col)  # Replace "1|1" with "2"
-      as.numeric(col)  # Convert to numeric, introduce NA for invalid values
-    }))
-  )
-  
-  # Ensure same number of row as initial
-  if (nrow(df_numeric) == nrow(df)) {
-    rownames(df_numeric) <- rownames(df)  # Assign row names
-  } else {
-    # Print diagnostic information for debugging
-    cat("Mismatch detected!\n")
-    cat("Original data frame dimensions:", nrow(df), ncol(df), "\n")
-    cat("Numeric data frame dimensions:", nrow(df_numeric), ncol(df_numeric), "\n")
-    stop("Mismatch between row names and number of rows in df_numeric!")
-  }
-  
-  return(df_numeric)
+  gc()  # Trigger garbage collection
+  return(processed_data_list)
 }
 
 ### Minor allele sampling
-maf <- function(df ,threshold = 0.05) {
-  filtered_data_numeric <- list()
+maf <- function(list_df, threshold = 0.05) {
+  # Initialize a list to store filtered data frames
+  all_filtered_data <- list()
   
-  # Calculate MAF for each locus
-  meta_maf <- apply(df[, -1], 1, function(row) {  # Exclude the first column (e.g., RowID)
-    n_individuals <- length(row)
-    count_0 <- sum(row == 0, na.rm = TRUE)
-    count_1 <- sum(row == 1, na.rm = TRUE)
-    count_2 <- sum(row == 2, na.rm = TRUE)
+  # Loop through each data frame in the list
+  for (i in seq_along(list_df)) {
+    df <- list_df[[i]]  # Get the current data frame
     
-    # Calculate the frequency of allele A and B
-    freq_A <- (count_0 * 2 + count_1) / (2 * n_individuals)
-    freq_B <- 1 - freq_A
+    # Exclude the first column (assumed to be non-locus data, e.g., population)
+    loci_data <- df[, -1]
     
-    return(min(freq_A, freq_B))  # Return the minor allele frequency
-  })
-  
-  # Debug: Print the calculated MAF values
-  #print("Calculated MAF values:")
-  #print(meta_maf)
-  
-  # Identify loci to keep based on the threshold
-  loci_to_keep <- which(meta_maf > threshold)
-  
-  # Debug: Print loci to keep
-  #print("Loci to keep (indices):")
-  #print(loci_to_keep)
-  
-  # Subset the data frame to keep selected loci
-  filtered_df <- df[loci_to_keep, , drop = FALSE]  # Ensure all dimensions remain intact
-  
-  # Debug: Print the filtered data
-  #print("Filtered data:")
-  #print(filtered_df)
-  
-  # Store the filtered data in the list
-  filtered_data_numeric <- filtered_df
-  
-  return(filtered_data_numeric)
+    # Calculate MAF for each locus
+    meta_maf <- apply(loci_data, 2, function(col) {
+      n_individuals <- length(col)
+      count_0 <- sum(col == 0, na.rm = TRUE)
+      count_1 <- sum(col == 1, na.rm = TRUE)
+      count_2 <- sum(col == 2, na.rm = TRUE)
+      
+      # Calculate the frequency of allele A and B
+      freq_A <- (count_0 * 2 + count_1) / (2 * n_individuals)
+      freq_B <- 1 - freq_A
+      
+      return(min(freq_A, freq_B))  # Return the minor allele frequency
+    })
+    
+    # Filter loci based on MAF threshold
+    filtered_data_numeric <- loci_data[, meta_maf > threshold, drop = FALSE]
+    
+    # Combine the filtered loci with the population column
+    filtered_df <- cbind(df[, 1, drop = FALSE], filtered_data_numeric)
+    
+    # Store the filtered data frame
+    all_filtered_data[[paste0("replicate ",i)]] <- filtered_df
+  }
+  gc()
+  # Return the list of filtered data frames
+  return(all_filtered_data)
 }
 
-#split our df into the 8 populations
-split_into_pop <- function(df) {
-  # Population range
-  population_ranges <- list(
-    pop1 = 2:21,   # i1 to i20
-    pop2 = 22:41,  # i21 to i40
-    pop3 = 42:61,  # i41 to i60
-    pop4 = 62:81,  # i61 to i80
-    pop5 = 82:101, # i81 to i100
-    pop6 = 102:121,# i101 to i120
-    pop7 = 122:141,# i121 to i140
-    pop8 = 142:161 # i141 to i160
-  )
+# normally distributed phenotype
+
+norm_phenotype <- function(list_df, output_dir = "plots") {
+  # Create the output directory if it doesn't exist
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir)
+  }
   
-  # Split genotype info into the 8 populations
-  df_list <- lapply(names(population_ranges), function(pop_name) {
-    # Extract columns corresponding to the population range
-    cols <- population_ranges[[pop_name]]
-    pop_df <- df[, c(1, cols), drop = FALSE]  # Include the first column along with the population range
-    return(pop_df)
-  })
+  result_list_df <- list()
+  allele_frequencies <- list()
   
-  # Assign names to the list for reference purposes
-  names(df_list) <- names(population_ranges)
+  for (i in seq_along(list_df)) {
+    # Extract loci data (excluding the population column)
+    loci_data <- list_df[[i]][, -1]
+    
+    # Generate random effect sizes for 1, 10, 100, 1000 loci
+    effect_size <- c(
+      rnorm(1),       # Effect sizes for 1 locus
+      rnorm(10),      # Effect sizes for 10 loci
+      rnorm(100),     # Effect sizes for 100 loci
+      rnorm(1000)     # Effect sizes for 1000 loci
+    )
+    
+    # Phenotype calculations and allele frequency for different sampling sizes
+    phenotypes <- list()
+    freq_list <- list()
+    
+    for (n_loci in c(1, 10, 100, 1000)) {
+      # Sample loci (use min() to handle cases where there are fewer loci available)
+      sampled_loci <- sample(colnames(loci_data), min(n_loci, ncol(loci_data)))
+      
+      # Subset the data frame to include the sampled loci
+      sampled_data <- loci_data[, sampled_loci, drop = FALSE]
+      
+      # Ensure sampled_data is numeric
+      sampled_data <- as.matrix(sampled_data)
+      sampled_data <- apply(sampled_data, 2, as.numeric)
+      
+      # Subset effect sizes to match the number of sampled loci
+      sampled_effect_sizes <- effect_size[1:ncol(sampled_data)]
+      
+      # Calculate the phenotype as a weighted sum of loci values and effect sizes
+      phenotype <- as.numeric(sampled_data %*% sampled_effect_sizes)
+      phenotypes[[paste0(n_loci, "_loci")]] <- phenotype
+      
+      # Calculate allele frequencies for the sampled loci
+      freqs <- colMeans(sampled_data, na.rm = TRUE) / 2  # Divide by 2 for diploid data
+      freq_list[[paste0(n_loci, "_loci")]] <- freqs
+      
+      # Create a data frame for plotting
+      freq_df <- data.frame(
+        locus = names(freqs),
+        frequency = freqs
+      )
+      
+      # Determine plot width dynamically
+      plot_width <- max(10, n_loci / 100)  # Scale width based on the number of loci
+      
+      # Generate the plot with vertical locus labels
+      p <- ggplot(freq_df, aes(x = locus, y = frequency)) +
+        geom_point(color = "blue") +
+        theme_minimal() +
+        labs(
+          title = paste("Allele Frequencies of non variant allele for", n_loci, "Loci"),
+          x = "Loci",
+          y = "Allele Frequency"
+        ) +
+        theme(
+          axis.text.x = element_text(angle = 90)
+        )
+      
+      # Save the plot
+      plot_file <- file.path(output_dir, paste0("replicate_",i, " allele_frequencies_", n_loci, "_loci.png"))
+      ggsave(plot_file, plot = p, width = 10, height = 6)
+    }
+    
+    # Combine phenotypes into a single data frame with population
+    result_df <- data.frame(
+      pop = list_df[[i]][, 1],
+      do.call(cbind, phenotypes)  # Combine all phenotype columns
+    )
+    
+    # Store the result and allele frequencies
+    result_list_df[[i]] <- result_df
+    allele_frequencies[[i]] <- freq_list
+  }
   
-  return(df_list)
+  return(result_list_df)
 }
 
 
-#calculate phenotype
-phenotype_calc_norm <- function(df, loci_number) {
-  
-  # Define which loci will be sampled
-  sampled_loci <- sample(nrow(df[[1]]), loci_number, replace = FALSE)
-  
-  # Generate a normal distribution for effect sizes
-  effect_size <- rnorm(loci_number) # Normal distribution effect size
-  
-  
-  # Calculate phenotype for each population
-  phenotype <- lapply(df, function(pop_data) { 
-    # Ensure pop_data is numeric, excluding the first column
-    pop_data_numeric <- as.matrix(pop_data[, -1])  # Exclude the first column (e.g., RowID)
-    
-    # Subset sampled loci
-    sampled_data <- pop_data_numeric[sampled_loci, , drop = FALSE]
-    
-    # Calculate phenotype (weighted sum)
-    colSums(sampled_data * effect_size)
-  })
-  
-  return(phenotype)
-}
 # uniform distribution
 phenotype_calc_uni <- function(df, loci_number) {
   

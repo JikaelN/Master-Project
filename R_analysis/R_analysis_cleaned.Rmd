@@ -20,7 +20,7 @@ library(kSamples)  # Required for ad.test
 library(VGAM) #L-shaped distribution
 library(dplyr)
 library(tidyr)
-library(nortest)
+
 
 library(hierfstat)
 if (!requireNamespace("kSamples", quietly = TRUE)) {
