@@ -135,6 +135,26 @@ maf <- function(list_df, threshold = 0.05) {
   return(all_filtered_data)
 }
 
+
+# get allele freq
+get_freq <- function(list_df){
+  list_rep_freq <- list()
+  for(replicate in seq_along(list_df)){
+    freq_mut <- apply(list_df[[replicate]][,-1], 2, function(col) {
+      n_individuals <- length(col)
+      count_0 <- sum(col == 0, na.rm = TRUE)
+      count_1 <- sum(col == 1, na.rm = TRUE)
+      
+      #Frequency allele A and B
+      freq_A <- (count_0*2 + count_1) / (2 * n_individuals)
+      freq_B <- 1 - freq_A
+    })
+    
+    list_rep_freq[[paste0("Replicate_", replicate)]] <- freq_mut
+  }
+  
+  return(list_rep_freq)
+}
 # normally distributed phenotype
 
 norm_phenotype <- function(list_df, output_dir = "plots") {
