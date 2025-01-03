@@ -238,11 +238,11 @@ norm_phenotype <- function(list_df, output_dir = "plots") {
     )
     
     # Store the result and allele frequencies
-    result_list_df[[i]] <- result_df
-    allele_frequencies[[i]] <- freq_list
+    result_list_df[[paste0("replicate_",i)]] <- result_df
+    allele_frequencies[[paste0("replicate_",i)]] <- freq_list
   }
   
-  return(result_list_df)
+  return(list(phenotype = result_list_df,allele_fre = allele_frequencies))
 }
 
 
@@ -297,19 +297,55 @@ phenotype_calc_l <- function(df, loci_number) {
 }
 
 # Calculate Qst
-Qst_cal <- function(pop_phenotype_list) {
-  #transform list of pop datafram to matrix 
-  phenotype_matrix <- do.call(cbind, pop_phenotype_list)
+Qst_cal <- function(df, phenotype_col) {
+  # Split the data by population
+  pop_split <- split(df, df$pop)
   
-  pop_mean <- colMeans(phenotype_matrix)  # each col is a pop : mean of each population : result a vector
-  overall_mean <- mean(pop_mean)     # mean of the resulting vector
-  V_B <- mean((pop_mean - overall_mean)^2) #variance between population
+  # Extract the phenotype column for each population and create a matrix
+  phenotype_matrix <- do.call(cbind, lapply(pop_split, function(pop_df) pop_df[[phenotype_col]]))
   
-  V_W <- mean(apply(phenotype_matrix, 2, var)) #compute the variance for each population (apply on column (2) since each column is a population) (diploid) and take the average
+  # Calculate population means (each column is a population)
+  pop_mean <- colMeans(phenotype_matrix, na.rm = TRUE)
+  
+  # Overall mean across populations
+  overall_mean <- mean(pop_mean, na.rm = TRUE)
+  
+  # Variance between populations
+  V_B <- mean((pop_mean - overall_mean)^2, na.rm = TRUE)
+  
+  # Variance within populations (average variance of all populations)
+  V_W <- mean(apply(phenotype_matrix, 2, var, na.rm = TRUE))
   
   # Calculate Qst
   Qst <- V_B / (V_B + 2 * V_W)
   return(Qst)
+}
+
+#calc QST on list of replicate
+qst_on_list <- function(list_replicate) {
+    norm_res_wom <- lapply(names(list_replicate), function(rep_name){
+    replicate_data <- list_replicate[[rep_name]]
+    #calc_qst
+    qst_1 <- Qst_cal(replicate_data, "X1_loci")
+    qst_10 <- Qst_cal(replicate_data, "X10_loci")
+    qst_100 <- Qst_cal(replicate_data, "X100_loci")
+    qst_1000 <- Qst_cal(replicate_data, "X1000_loci")
+    
+    #return a df
+    data.frame(
+      replicate = rep_name,
+      N1_loci = qst_1,
+      N10_loci = qst_10,
+      N100_loci = qst_100,
+      N1000_loci = qst_1000
+    )
+  })
+  
+  result_df <- do.call(rbind, norm_res_wom)
+  rownames(result_df) <- result_df$replicate
+  result_df$replicate <- NULL
+  
+  return (result_df)
 }
 
 # Flatten the nested structure into a single data frame
