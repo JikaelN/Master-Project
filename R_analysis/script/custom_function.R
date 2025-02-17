@@ -238,38 +238,191 @@ norm_phenotype <- function(list_df, output_dir = "plots") {
     )
     
     # Store the result and allele frequencies
-    result_list_df[[i]] <- result_df
-    allele_frequencies[[i]] <- freq_list
+    result_list_df[[paste0("replicate_",i)]] <- result_df
+    allele_frequencies[[paste0("replicate_",i)]] <- freq_list
   }
   
-  return(result_list_df)
+  return(list(phenotype = result_list_df,allele_fre = allele_frequencies))
 }
 
 
-# uniform distribution
-phenotype_calc_uni <- function(df, loci_number) {
+uni_phenotype <- function(list_df, output_dir = "plots") {
+  # Create the output directory if it doesn't exist
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir)
+  }
   
-  # Define which loci will be sampled
-  sampled_loci <- sample(nrow(df[[1]]), loci_number, replace = FALSE)
+  result_list_df <- list()
+  allele_frequencies <- list()
   
-  # Generate an uniform distribution for effect sizes
-  effect_size <- runif(loci_number, min = -0.5, max = 0.5)
-  
-  
-  # Calculate phenotype for each population
-  phenotype <- lapply(df, function(pop_data) { 
-    # Ensure pop_data is numeric, excluding the first column
-    pop_data_numeric <- as.matrix(pop_data[, -1])  # Exclude the first column (e.g., RowID)
+  for (i in seq_along(list_df)) {
+    # Extract loci data (excluding the population column)
+    loci_data <- list_df[[i]][, -1]
     
-    # Subset sampled loci
-    sampled_data <- pop_data_numeric[sampled_loci, , drop = FALSE]
+    # Generate random effect sizes for 1, 10, 100, 1000 loci
+    effect_size <- c(
+      runif(1, min = -0.5, max = 0.5),       # Effect sizes for 1 locus
+      runif(10, min = -0.5, max = 0.5),      # Effect sizes for 10 loci
+      runif(100, min = -0.5, max = 0.5),     # Effect sizes for 100 loci
+      runif(1000, min = -0.5, max = 0.5)     # Effect sizes for 1000 loci
+    )
     
-    # Calculate phenotype (weighted sum)
-    colSums(sampled_data * effect_size)
-  })
+    # Phenotype calculations and allele frequency for different sampling sizes
+    phenotypes <- list()
+    freq_list <- list()
+    
+    for (n_loci in c(1, 10, 100, 1000)) {
+      # Sample loci (use min() to handle cases where there are fewer loci available)
+      sampled_loci <- sample(colnames(loci_data), min(n_loci, ncol(loci_data)))
+      
+      # Subset the data frame to include the sampled loci
+      sampled_data <- loci_data[, sampled_loci, drop = FALSE]
+      
+      # Ensure sampled_data is numeric
+      sampled_data <- as.matrix(sampled_data)
+      sampled_data <- apply(sampled_data, 2, as.numeric)
+      
+      # Subset effect sizes to match the number of sampled loci
+      sampled_effect_sizes <- effect_size[1:ncol(sampled_data)]
+      
+      # Calculate the phenotype as a weighted sum of loci values and effect sizes
+      phenotype <- as.numeric(sampled_data %*% sampled_effect_sizes)
+      phenotypes[[paste0(n_loci, "_loci")]] <- phenotype
+      
+      # Calculate allele frequencies for the sampled loci
+      freqs <- colMeans(sampled_data, na.rm = TRUE) / 2  # Divide by 2 for diploid data
+      freq_list[[paste0(n_loci, "_loci")]] <- freqs
+      
+      # Create a data frame for plotting
+      freq_df <- data.frame(
+        locus = names(freqs),
+        frequency = freqs
+      )
+      
+      # Determine plot width dynamically
+      plot_width <- max(10, n_loci / 100)  # Scale width based on the number of loci
+      
+      # Generate the plot with vertical locus labels
+      p <- ggplot(freq_df, aes(x = locus, y = frequency)) +
+        geom_point(color = "blue") +
+        theme_minimal() +
+        labs(
+          title = paste("Allele Frequencies of non variant allele for", n_loci, "Loci"),
+          x = "Loci",
+          y = "Allele Frequency"
+        ) +
+        theme(
+          axis.text.x = element_text(angle = 90)
+        )
+      
+      # Save the plot
+      plot_file <- file.path(output_dir, paste0("replicate_",i, " allele_frequencies_", n_loci, "_loci.png"))
+      ggsave(plot_file, plot = p, width = 10, height = 6)
+    }
+    
+    # Combine phenotypes into a single data frame with population
+    result_df <- data.frame(
+      pop = list_df[[i]][, 1],
+      do.call(cbind, phenotypes)  # Combine all phenotype columns
+    )
+    
+    # Store the result and allele frequencies
+    result_list_df[[paste0("replicate_",i)]] <- result_df
+    allele_frequencies[[paste0("replicate_",i)]] <- freq_list
+  }
   
-  return(phenotype)
+  return(list(phenotype = result_list_df,allele_fre = allele_frequencies))
 }
+
+l_phenotype <- function(list_df, output_dir = "plots") {
+  # Create the output directory if it doesn't exist
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir)
+  }
+  
+  result_list_df <- list()
+  allele_frequencies <- list()
+  
+  for (i in seq_along(list_df)) {
+    # Extract loci data (excluding the population column)
+    loci_data <- list_df[[i]][, -1]
+    
+    # Generate random effect sizes for 1, 10, 100, 1000 loci
+    effect_size <- c(
+      rpareto(1, scale = 0.1, shape = 2),       # Effect sizes for 1 locus
+      rpareto(10, scale = 0.1, shape = 2),      # Effect sizes for 10 loci
+      rpareto(100, scale = 0.1, shape = 2),     # Effect sizes for 100 loci
+      rpareto(1000, scale = 0.1, shape = 2)     # Effect sizes for 1000 loci
+    )
+    
+    # Phenotype calculations and allele frequency for different sampling sizes
+    phenotypes <- list()
+    freq_list <- list()
+    
+    for (n_loci in c(1, 10, 100, 1000)) {
+      # Sample loci (use min() to handle cases where there are fewer loci available)
+      sampled_loci <- sample(colnames(loci_data), min(n_loci, ncol(loci_data)))
+      
+      # Subset the data frame to include the sampled loci
+      sampled_data <- loci_data[, sampled_loci, drop = FALSE]
+      
+      # Ensure sampled_data is numeric
+      sampled_data <- as.matrix(sampled_data)
+      sampled_data <- apply(sampled_data, 2, as.numeric)
+      
+      # Subset effect sizes to match the number of sampled loci
+      sampled_effect_sizes <- effect_size[1:ncol(sampled_data)]
+      
+      # Calculate the phenotype as a weighted sum of loci values and effect sizes
+      phenotype <- as.numeric(sampled_data %*% sampled_effect_sizes)
+      phenotypes[[paste0(n_loci, "_loci")]] <- phenotype
+      
+      # Calculate allele frequencies for the sampled loci
+      freqs <- colMeans(sampled_data, na.rm = TRUE) / 2  # Divide by 2 for diploid data
+      freq_list[[paste0(n_loci, "_loci")]] <- freqs
+      
+      # Create a data frame for plotting
+      freq_df <- data.frame(
+        locus = names(freqs),
+        frequency = freqs
+      )
+      
+      # Determine plot width dynamically
+      plot_width <- max(10, n_loci / 100)  # Scale width based on the number of loci
+      
+      # Generate the plot with vertical locus labels
+      p <- ggplot(freq_df, aes(x = locus, y = frequency)) +
+        geom_point(color = "blue") +
+        theme_minimal() +
+        labs(
+          title = paste("Allele Frequencies of non variant allele for", n_loci, "Loci"),
+          x = "Loci",
+          y = "Allele Frequency"
+        ) +
+        theme(
+          axis.text.x = element_text(angle = 90)
+        )
+      
+      # Save the plot
+      plot_file <- file.path(output_dir, paste0("replicate_",i, " allele_frequencies_", n_loci, "_loci.png"))
+      ggsave(plot_file, plot = p, width = 10, height = 6)
+    }
+    
+    # Combine phenotypes into a single data frame with population
+    result_df <- data.frame(
+      pop = list_df[[i]][, 1],
+      do.call(cbind, phenotypes)  # Combine all phenotype columns
+    )
+    
+    # Store the result and allele frequencies
+    result_list_df[[paste0("replicate_",i)]] <- result_df
+    allele_frequencies[[paste0("replicate_",i)]] <- freq_list
+  }
+  
+  return(list(phenotype = result_list_df,allele_fre = allele_frequencies))
+}
+
+
 
 # L-shaped distribution
 phenotype_calc_l <- function(df, loci_number) {
@@ -297,19 +450,55 @@ phenotype_calc_l <- function(df, loci_number) {
 }
 
 # Calculate Qst
-Qst_cal <- function(pop_phenotype_list) {
-  #transform list of pop datafram to matrix 
-  phenotype_matrix <- do.call(cbind, pop_phenotype_list)
+Qst_cal <- function(df, phenotype_col) {
+  # Split the data by population
+  pop_split <- split(df, df$pop)
   
-  pop_mean <- colMeans(phenotype_matrix)  # each col is a pop : mean of each population : result a vector
-  overall_mean <- mean(pop_mean)     # mean of the resulting vector
-  V_B <- mean((pop_mean - overall_mean)^2) #variance between population
+  # Extract the phenotype column for each population and create a matrix
+  phenotype_matrix <- do.call(cbind, lapply(pop_split, function(pop_df) pop_df[[phenotype_col]]))
   
-  V_W <- mean(apply(phenotype_matrix, 2, var)) #compute the variance for each population (apply on column (2) since each column is a population) (diploid) and take the average
+  # Calculate population means (each column is a population)
+  pop_mean <- colMeans(phenotype_matrix, na.rm = TRUE)
+  
+  # Overall mean across populations
+  overall_mean <- mean(pop_mean, na.rm = TRUE)
+  
+  # Variance between populations
+  V_B <- mean((pop_mean - overall_mean)^2, na.rm = TRUE)
+  
+  # Variance within populations (average variance of all populations)
+  V_W <- mean(apply(phenotype_matrix, 2, var, na.rm = TRUE))
   
   # Calculate Qst
   Qst <- V_B / (V_B + 2 * V_W)
   return(Qst)
+}
+
+#calc QST on list of replicate
+qst_on_list <- function(list_replicate) {
+    norm_res_wom <- lapply(names(list_replicate), function(rep_name){
+    replicate_data <- list_replicate[[rep_name]]
+    #calc_qst
+    qst_1 <- Qst_cal(replicate_data, "X1_loci")
+    qst_10 <- Qst_cal(replicate_data, "X10_loci")
+    qst_100 <- Qst_cal(replicate_data, "X100_loci")
+    qst_1000 <- Qst_cal(replicate_data, "X1000_loci")
+    
+    #return a df
+    data.frame(
+      replicate = rep_name,
+      N1_loci = qst_1,
+      N10_loci = qst_10,
+      N100_loci = qst_100,
+      N1000_loci = qst_1000
+    )
+  })
+  
+  result_df <- do.call(rbind, norm_res_wom)
+  rownames(result_df) <- result_df$replicate
+  result_df$replicate <- NULL
+  
+  return (result_df)
 }
 
 # Flatten the nested structure into a single data frame

@@ -14,7 +14,7 @@ OUTPUT_DIR01="./R_analysis/data/neutral_001"
 OUTPUT_DIR1="./R_analysis/data/neutral_01"
 
 # Number of replicates
-NUM_REPLICATES=10
+NUM_REPLICATES=2
 
 # Create output directories
 mkdir -p "$OUTPUT_DIR05"
