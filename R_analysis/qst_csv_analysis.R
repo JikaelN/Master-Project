@@ -1,407 +1,455 @@
-library(dplyr)
 library(ggplot2)
 library(tidyr)
 library(ggpubr)
+library(tidyverse)
+library(kSamples)  # for Anderson–Darling test
+library(conflicted)  # force conflicts to become errors
 
-stepping_vizualization <- function(directory){
-  # List CSV files matching the pattern *_Qst_stepping.csv in the given directory
-  files <- list.files(directory, pattern = "_Qst_stepping\\.csv$", full.names = TRUE)
+create_qqplot <- function(data1, data2, label1, label2, title_text) {
+  # Sort the data (i.e. get empirical quantiles)
+  qq_df <- data.frame(
+    quantile1 = sort(data1),
+    quantile2 = sort(data2)
+  )
+  p <- ggplot(qq_df, aes(x = quantile1, y = quantile2)) +
+    geom_point(color = "blue", alpha = 0.6) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+    labs(title = title_text, x = label1, y = label2) +
+    theme_minimal()
+  return(p)
+}
+
+create_qqplot_migration <- function(data1, data2, label1, label2, title_text) {
+  # Use the minimum length from both groups
+  n <- min(length(data1), length(data2))
+  qq_df <- data.frame(
+    sample1 = sort(data1)[1:n],
+    sample2 = sort(data2)[1:n]
+  )
   
-  # Create an output directory for the plots (stepping_plot)
-  output_dir <- file.path(directory, "stepping_plot")
-  if(!dir.exists(output_dir)) {
-    dir.create(output_dir, recursive = TRUE)
-  }
+  p <- ggplot(qq_df, aes(x = sample1, y = sample2)) +
+    geom_point(color = "blue", alpha = 0.6) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+    labs(title = title_text, x = label1, y = label2) +
+    theme_minimal()
   
-  # Define migration labels mapping for facets (adjust keys if needed)
-  migration_labels <- c("5" = "Migration rate: 5%",
-                        "1" = "Migration rate: 10%",
-                        "15" = "Migration rate: 15%",
-                        "2" = "Migration rate: 20%")
+  return(p)
+}
+compare_qst_files <- function(input_dir, output_dir) {
+  # Prefer dplyr's filter
+  conflicts_prefer(dplyr::filter)
   
-  # Loop over each CSV file in the directory
+  list_df <- list()
+  # List all CSV files in the input directory
+  files <- list.files(input_dir, pattern = "\\.csv$", full.names = TRUE)
   for(file in files){
-    # Extract the prefix from the filename.
-    # For example: "XX_maf_Qst_stepping.csv" -> "XX_maf"
-    prefix <- sub("_Qst_stepping\\.csv$", "", basename(file))
+    # take base name and extract info from file_name
+    base_name <- basename(file)
+    parts <- unlist(strsplit(base_name, "_"))
+    effect_size <-parts[1] #effect size distribution
+    filtering_type <- parts[2] #maf or without maf
+    type_model <- unlist(strsplit(parts[4], "\\."))[1] #island or stepping
     
-    # Read the CSV file
-    qst_df <- read.csv(file, stringsAsFactors = FALSE)
+    #save directory
+    filter_dir <- file.path(output_dir, filtering_type)
+    if (!dir.exists(filter_dir)) {
+      dir.create(filter_dir, recursive = TRUE)
+    }
     
-    # Convert columns to proper types:
-    # Ensure 'loci_size' is a factor with the desired ordering
-    qst_df$loci_size <- factor(qst_df$loci_size, levels = c("1_loci", "10_loci", "100_loci", "1000_loci"))
-    # Convert stepping to a factor if it isn't already
-    qst_df$stepping <- as.factor(qst_df$stepping)
     
-    # Replace negative Qst values with 0
-    qst_df_modified <- qst_df %>%
-      mutate(Qst = ifelse(Qst < 0, 0, Qst))
+    # Correction to have migration rate value as character
+    temp <- read.csv(file, nrows = 1)
+    num_cols <- ncol(temp)
+    df <- read.csv(file,colClasses = c("character", rep(NA, num_cols - 1)))
+    #change colname to be uniform across all type of file
+    colnames(df) <- c("MR", "replicate", "loci_size", "QST")
     
-    # Create the box plot faceted by stepping with custom facet labels
-    box_plot <- ggplot(qst_df_modified, aes(x = loci_size, y = Qst, fill = loci_size)) +
-      geom_boxplot() +
-      facet_wrap(~ stepping, labeller = as_labeller(migration_labels)) +
-      labs(title = "Box Plot of Qst by Loci Size for each Migration Rate",
-           x = "Loci Size",
-           y = "Qst") +
-      theme_minimal() +
-      theme(legend.position = "none")
+    #split df per migration rate
+    df_list <- split(df, df$MR)
     
-    # Save the box plot with a filename that includes the prefix
-    box_filename <- file.path(output_dir, paste0(prefix, "_box_plot_stepping.png"))
-    ggsave(filename = box_filename, plot = box_plot, width = 8, height = 6)
+    for(data in df_list){
+      MR <- unique(data$MR)
+      df_loci <- split(df, df$loci_size)
+      pairs_to_compare <- list(c("1_loci","10_loci"), c("1_loci","100_loci"), c("1_loci","1000_loci"),
+                               c("10_loci","100_loci"), c("10_loci","1000_loci"), c("100_loci","1000_loci"))
+      
+      # Loop over each pair and create a QQ plot.
+      for(pair in pairs_to_compare) {
+        l1 <- pair[1]
+        l2 <- pair[2]
+        
+        # Subset QST values for each loci size.
+        qst1 <- data %>% filter(loci_size == l1) %>% pull(QST)
+        qst2 <- data %>% filter(loci_size == l2) %>% pull(QST)
+        
+        l1 <- unlist(strsplit(l1, "_"))[1]
+        l2 <- unlist(strsplit(l2, "_"))[1]
+        
+        if(length(qst1) > 0 && length(qst2) > 0) {
+          title_text <- paste(filtering_type, effect_size, l1, "vs", l2, "loci for", type_model, "model at", MR, "migration rate")
+          p <- create_qqplot(qst1, qst2, paste(l1, "loci"), paste(l2, "loci"), title_text)
+          
+          # Save the QQ plot
+          filename <- file.path(filter_dir, 
+                                paste0(effect_size,"_QQplot_", l1, "_vs_", l2, "_", type_model, "_", MR, "_Migration rate.png"))
+          ggsave(filename = filename, plot = p, width = 8, height = 6, dpi = 300)
+          
+          # ----- Perform ANOVA -----
+          values <- c(qst1, qst2)
+          group <- factor(c(rep("group1", length(qst1)), rep("group2", length(qst2))))
+          anova_model <- aov(values ~ group)
+          anova_summary <- summary(anova_model)
+          anova_p <- anova_summary[[1]]$`Pr(>F)`[1]
+          if(length(anova_p) == 0) anova_p <- NA
+          
+          # ----- Perform Anderson-Darling Test -----
+          ad_result <- tryCatch({
+            kSamples::ad.test(list(qst1, qst2))
+            kSamples::ad.test(list(qst1, qst2))
+          }, error = function(e) { list(p.value = NA) })
+          ad_p <- ad_result$ad[1,3]
+          ad_p
+          if(length(ad_p) == 0) ad_p <- NA
+          
+          # ----- Perform Kolmogorov-Smirnov Test -----
+          ks_result <- ks.test(qst1, qst2)
+          ks_p <- ks_result$p.value
+          if(length(ks_p) == 0) ks_p <- NA
+          
+          # Prepare a row for the CSV file for each test.
+          loci_comp <- paste(l1, "vs", l2)
+          
+          anova_row <- data.frame(migration_rate = MR,effect_size = effect_size, loci_comparison = loci_comp, p_value = anova_p, stringsAsFactors = FALSE)
+          ad_row    <- data.frame(migration_rate = MR,effect_size = effect_size, loci_comparison = loci_comp, p_value = ad_p, stringsAsFactors = FALSE)
+          ks_row    <- data.frame(migration_rate = MR,effect_size = effect_size, loci_comparison = loci_comp, p_value = ks_p, stringsAsFactors = FALSE)
+          
+          # Define filenames for the CSV output (one file per test)
+          anova_file <- file.path(filter_dir, "anova_results.csv")
+          ad_file    <- file.path(filter_dir, "adtest_results.csv")
+          ks_file    <- file.path(filter_dir, "kstest_results.csv")
+          
+          write_mode <- function(file, data) {
+            if (!file.exists(file)) {
+              write.table(data, file = file, sep = ",", row.names = FALSE, col.names = TRUE, append = FALSE)
+            } else {
+              write.table(data, file = file, sep = ",", row.names = FALSE, col.names = FALSE, append = TRUE)
+            }
+          }
+          
+          write_mode(anova_file, anova_row)
+          write_mode(ad_file, ad_row)
+          write_mode(ks_file, ks_row)
+          
+        } else {
+          message("Not enough data for loci sizes ", l1, " and ", l2)
+        }
+        
+        
+      }
+    }
     
-    # Create the density plot faceted by stepping
-    density_plot <- ggplot(qst_df_modified, aes(x = Qst, color = loci_size)) +
-      geom_density(size = 1) +
-      facet_wrap(~ stepping, labeller = as_labeller(migration_labels)) +
-      labs(title = "Density Plot of Qst by Loci Size for each Migration Rate",
-           x = "Qst",
-           y = "Density") +
-      theme_minimal()
-    
-    # Save the density plot with a filename that includes the prefix
-    density_filename <- file.path(output_dir, paste0(prefix, "_density_plot_stepping.png"))
-    ggsave(filename = density_filename, plot = density_plot, width = 8, height = 6)
-    
-    cat("Plots saved for", prefix, "\n")
   }
 }
 
-stepping_vizualization_fst <- function(directory){
-  # List CSV files matching *_Fst_stepping.csv in the specified directory
-  files <- list.files(directory, pattern = "_Fst_stepping\\.csv$", full.names = TRUE)
+compare_qst_files_migration <- function(input_dir, output_dir) {
+  # Prefer dplyr's filter
+  conflicts_prefer(dplyr::filter)
   
-  # Create an output directory for the plots (e.g., "stepping_plot")
-  output_dir <- file.path(directory, "stepping_plot")
-  if(!dir.exists(output_dir)) {
-    dir.create(output_dir, recursive = TRUE)
-  }
+  # List all CSV files in the input directory
+  files <- list.files(input_dir, pattern = "\\.csv$", full.names = TRUE)
   
-  # Define a mapping for the stepping values to migration rate labels.
-  # Adjust the keys to match your stepping values.
-  migration_labels <- c("5"  = "Migration rate: 5%",
-                        "1"  = "Migration rate: 10%",
-                        "15" = "Migration rate: 15%",
-                        "2"  = "Migration rate: 20%")
-  
-  # Iterate over each CSV file
   for(file in files){
-    # Extract the prefix from the filename.
-    # E.g. "XX_maf_Fst_stepping.csv" -> "XX_maf"
-    prefix <- sub("_Fst_stepping\\.csv$", "", basename(file))
+    # Take base name and extract info from file name
+    base_name <- basename(file)
+    parts <- unlist(strsplit(base_name, "_"))
+    effect_size <- parts[1]                # effect size distribution (e.g., "inverse", "l", "linked", "uni", "norm")
+    filtering_type <- parts[2]               # e.g., "maf" or "wo"
+    type_model <- unlist(strsplit(parts[4], "\\."))[1]  # e.g., "island" or "stepping"
     
-    # Read the CSV file. 
-    # If the first column (e.g., stepping) should be forced to character, adjust colClasses as needed.
-    fst_df <- read.csv(file, stringsAsFactors = FALSE)
+    # Define output directory: use output_dir/filtering_type
+    filter_dir <- file.path(output_dir, filtering_type)
+    if (!dir.exists(filter_dir)) {
+      dir.create(filter_dir, recursive = TRUE)
+    }
     
-    # Convert stepping to factor (preserving any leading zeros if you have them).
-    # Adjust the factor levels if you want a specific order.
-    fst_df$stepping <- factor(fst_df$stepping, levels = c("5", "1", "15", "2"))
+    # Read file forcing the first column as character
+    temp <- read.csv(file, nrows = 1)
+    num_cols <- ncol(temp)
+    df <- read.csv(file, colClasses = c("character", rep(NA, num_cols - 1)))
+    # Rename columns uniformly
+    colnames(df) <- c("MR", "replicate", "loci_size", "QST")
     
-    # Set loci_size as an ordered factor
-    fst_df$loci_size <- factor(fst_df$loci_size, levels = c("1_loci", "10_loci", "100_loci", "1000_loci"))
+    # ----- Compare the same loci between different migration rates -----
+    # Split data by loci_size so that for each loci (e.g., "1_loci") we can compare across migration rates.
+    loci_groups <- split(df, df$loci_size)
     
-    # Replace negative Fst values with 0
-    fst_df_modified <- fst_df %>%
-      mutate(Fst = ifelse(Fst < 0, 0, Fst))
+    for(loci in names(loci_groups)){
+      data_loci <- loci_groups[[loci]]
+      # Get unique migration rates present for this loci group
+      mrs <- unique(data_loci$MR)
+      if(length(mrs) >= 2){
+        # Create all pairwise combinations of migration rates for this loci group
+        migration_pairs <- combn(mrs, 2, simplify = FALSE)
+        for(pair in migration_pairs){
+          mr1 <- pair[1]
+          mr2 <- pair[2]
+          
+          # Extract QST values for each migration rate in the same loci group.
+          qst1 <- data_loci %>% filter(MR == mr1) %>% pull(QST)
+          qst2 <- data_loci %>% filter(MR == mr2) %>% pull(QST)
+          
+          # For labeling, remove the "_loci" suffix (e.g., "1_loci" becomes "1")
+          loci_label <- unlist(strsplit(loci, "_"))[1]
+          
+          if(length(qst1) > 0 && length(qst2) > 0){
+            title_text <- paste(filtering_type, effect_size, loci_label, "loci for", type_model, "model comparing migration rates", mr1, "vs", mr2)
+            p <- create_qqplot_migration(qst1, qst2, paste(mr1, "migration"), paste(mr2, "migration"), title_text)
+            
+            # Save the QQ plot
+            filename <- file.path(filter_dir, 
+                                  paste0(effect_size, "_QQplot_", loci_label, "_loci_", mr1, "_vs_", mr2, "_MigrationComparison_", type_model, ".png"))
+            ggsave(filename = filename, plot = p, width = 8, height = 6, dpi = 300)
+            
+            # ----- Perform Statistical Tests -----
+            # ANOVA: compare the two groups
+            values <- c(qst1, qst2)
+            group <- factor(c(rep("group1", length(qst1)), rep("group2", length(qst2))))
+            anova_model <- aov(values ~ group)
+            anova_summary <- summary(anova_model)
+            anova_p <- anova_summary[[1]]$`Pr(>F)`[1]
+            if(length(anova_p) == 0) anova_p <- NA
+            
+            # Anderson-Darling Test: extract the asymptotic p-value from the "ad" matrix.
+            ad_result <- tryCatch({
+              kSamples::ad.test(list(qst1, qst2))
+            }, error = function(e) { list(ad = matrix(NA, nrow = 2, ncol = 3)) })
+            ad_p <- ad_result$ad[1, 3]
+            if(length(ad_p) == 0) ad_p <- NA
+            
+            # Kolmogorov-Smirnov Test:
+            ks_result <- ks.test(qst1, qst2)
+            ks_p <- ks_result$p.value
+            if(length(ks_p) == 0) ks_p <- NA
+            
+            # Prepare rows for the CSV output. The columns are:
+            # "Migration rate X v Y", "effect_size", "loci comparison", "p_value"
+            migration_comp <- paste(mr1, "v", mr2)
+            loci_comp <- paste(loci_label, "v", loci_label)
+            
+            anova_row <- data.frame(`Migration rate X v Y` = migration_comp,
+                                    effect_size = effect_size,
+                                    `loci comparison` = loci_comp,
+                                    p_value = anova_p,
+                                    stringsAsFactors = FALSE)
+            ad_row <- data.frame(`Migration rate X v Y` = migration_comp,
+                                 effect_size = effect_size,
+                                 `loci comparison` = loci_comp,
+                                 p_value = ad_p,
+                                 stringsAsFactors = FALSE)
+            ks_row <- data.frame(`Migration rate X v Y` = migration_comp,
+                                 effect_size = effect_size,
+                                 `loci comparison` = loci_comp,
+                                 p_value = ks_p,
+                                 stringsAsFactors = FALSE)
+            
+            # Define output filenames for the CSV results within filter_dir.
+            anova_file <- file.path(filter_dir, "anova_results_migration_comparison.csv")
+            ad_file <- file.path(filter_dir, "adtest_results_migration_comparison.csv")
+            ks_file <- file.path(filter_dir, "kstest_results_migration_comparison.csv")
+            
+            write_mode <- function(file, data) {
+              if (!file.exists(file)) {
+                write.table(data, file = file, sep = ",", row.names = FALSE, col.names = TRUE, append = FALSE)
+              } else {
+                write.table(data, file = file, sep = ",", row.names = FALSE, col.names = FALSE, append = TRUE)
+              }
+            }
+            
+            write_mode(anova_file, anova_row)
+            write_mode(ad_file, ad_row)
+            write_mode(ks_file, ks_row)
+            
+          } else {
+            message("Not enough data for loci ", loci, " comparing migration rates ", mr1, " vs ", mr2)
+          }
+        }
+      } else {
+        message("Not enough migration rate groups for loci ", loci)
+      }
+    }
     
-    ## Faceted Plots ##
-    # 1) Box plot faceted by stepping
-    box_plot <- ggplot(fst_df_modified, aes(x = loci_size, y = Fst, fill = loci_size)) +
-      geom_boxplot() +
-      facet_wrap(~ stepping, labeller = as_labeller(migration_labels)) +
-      labs(title = "Box Plot of Fst by Loci Size for each Migration Rate",
-           x = "Loci Size",
-           y = "Fst") +
-      theme_minimal() +
-      theme(legend.position = "none")
+    # ----- Summary Statistics -----
+    # Compute summary statistics (mean, standard deviation, and variance of QST)
+    # for each loci_size for each migration rate.
+    summary_stats <- df %>%
+      group_by(MR, loci_size) %>%
+      summarise(
+        mean_QST = mean(as.numeric(QST), na.rm = TRUE),
+        sd_QST = sd(as.numeric(QST), na.rm = TRUE),
+        var_QST = var(as.numeric(QST), na.rm = TRUE),
+        n = n()
+      ) %>%
+      ungroup() %>%
+      mutate(effect_size = effect_size,
+             filtering_type = filtering_type,
+             type_model = type_model)
     
-    # Save the box plot
-    box_filename <- file.path(output_dir, paste0(prefix, "_box_plot_stepping.png"))
-    ggsave(filename = box_filename, plot = box_plot, width = 8, height = 6)
-    
-    # 2) Density plot faceted by stepping
-    density_plot <- ggplot(fst_df_modified, aes(x = Fst, color = loci_size)) +
-      geom_density(size = 1) +
-      facet_wrap(~ stepping, labeller = as_labeller(migration_labels)) +
-      labs(title = "Density Plot of Fst by Loci Size for each Migration Rate\n(Negatives set to 0)",
-           x = "Fst",
-           y = "Density") +
-      theme_minimal()
-    
-    density_filename <- file.path(output_dir, paste0(prefix, "_density_plot_stepping.png"))
-    ggsave(filename = density_filename, plot = density_plot, width = 8, height = 6)
-    
-    # 3) Histogram faceted by stepping
-    histogram_plot <- ggplot(fst_df_modified, aes(x = Fst, fill = loci_size)) +
-      geom_histogram(bins = 30, alpha = 0.7, position = "dodge") +
-      facet_wrap(~ stepping, labeller = as_labeller(migration_labels)) +
-      labs(title = "Histogram of Fst by Loci Size for each Migration Rate\n(Negatives set to 0)",
-           x = "Fst",
-           y = "Count") +
-      theme_minimal()
-    
-    histogram_filename <- file.path(output_dir, paste0(prefix, "_histogram_plot_stepping.png"))
-    ggsave(filename = histogram_filename, plot = histogram_plot, width = 8, height = 6)
-    
-    ## Overall Comparison Plot by Loci Size ##
-    # Define comparisons for stepping groups (within each loci_size)
-    # Adjust pairs to match your factor levels.
-    comparisons <- list(
-      c("5", "1"),
-      c("5", "15"),
-      c("5", "2"),
-      c("1", "15"),
-      c("1", "2"),
-      c("15", "2")
-    )
-    
-    # Compute max Fst to position annotations
-    max_fst <- max(fst_df_modified$Fst, na.rm = TRUE)
-    
-    overall_box_plot_by_loci <- ggplot(fst_df_modified, aes(x = stepping, y = Fst, fill = stepping)) +
-      geom_boxplot() +
-      facet_wrap(~ loci_size) +
-      # Kruskal-Wallis test
-      stat_compare_means(
-        method = "kruskal.test",
-        label.x.npc = "right",
-        label.y = max_fst * 1.1,  # place above the highest box
-        size = 3
-      ) +
-      # Pairwise Wilcoxon comparisons
-      stat_compare_means(
-        comparisons = comparisons,
-        method = "wilcox.test",
-        step.increase = 0.1,
-        size = 3
-      ) +
-      labs(
-        title = "Comparison of Fst by Stepping (Migration Rate) for each Loci Size",
-        subtitle = "Pairwise comparisons (Wilcoxon tests) shown per loci size",
-        x = "Stepping (Migration Rate)",
-        y = "Fst (Negatives set to 0)"
-      ) +
-      theme_minimal() +
-      theme(
-        legend.position = "none",
-        # Increase overall text sizes for better readability
-        plot.title = element_text(size = 18, face = "bold"),
-        plot.subtitle = element_text(size = 14),
-        axis.title = element_text(size = 14),
-        axis.text = element_text(size = 12)
-      )
-    
-    overall_box_filename_by_loci <- file.path(output_dir, paste0(prefix, "_overall_box_plot_by_loci.png"))
-    ggsave(filename = overall_box_filename_by_loci, plot = overall_box_plot_by_loci,
-           width = 16, height = 8, dpi = 300)
-    
-    cat("Plots saved for", prefix, "\n")
+    summary_file <- file.path(filter_dir, paste0(effect_size, "_", type_model, "_", filtering_type, "_summary.csv"))
+    write.csv(summary_stats, file = summary_file, row.names = FALSE)
   }
 }
 
-
-island_vizualization <- function(directory){
-  # List CSV files matching the pattern *_Qst_island.csv in the given directory
-  files <- list.files(directory, pattern = "_Qst_island\\.csv$", full.names = TRUE)
+compare_qst_effect_size <- function(input_dir, output_dir){
+  # Prefer dplyr's filter
+  conflicts_prefer(dplyr::filter)
   
-  # Create an output directory for the plots (island_plot)
-  output_dir <- file.path(directory, "island_plot")
-  if(!dir.exists(output_dir)) {
-    dir.create(output_dir, recursive = TRUE)
-  }
+  #####TEST####
+  temp_df <- list()
   
-  # Define migration labels mapping for facets (adjust keys if needed)
-  migration_labels <- c("001" = "Migration rate: 1%",
-                        "005" = "Migration rate: 5%",
-                        "008" = "Migration rate: 8%",
-                        "01" = "Migration rate: 10%")
+  # List all CSV files in the input directory
+  files <- list.files(input_dir, pattern = "\\.csv$", full.names = TRUE)
   
-  # Loop over each CSV file in the directory
   for(file in files){
-    # Extract the prefix from the filename.
-    # For example: "XX_maf_Qst_island.csv" -> "XX_maf"
-    prefix <- sub("_Qst_island\\.csv$", "", basename(file))
+    # Extract information from file name
+    base_name <- basename(file)
+    parts <- unlist(strsplit(base_name, "_"))
+    effect_size <- parts[1]                
+    filtering_type <- parts[2]               
+    type_model <- unlist(strsplit(parts[4], "\\."))[1]  
     
-    # Read the CSV file
-    qst_df <- read.csv(file, stringsAsFactors = FALSE ,colClasses = c("character", NA, NA, NA))
+    # Define output directory: use output_dir/filtering_type
+    filter_dir <- file.path(output_dir, filtering_type)
+    if (!dir.exists(filter_dir)) {
+      dir.create(filter_dir, recursive = TRUE)
+    }
     
-    
-    # Convert columns to proper types:
-    # Ensure 'loci_size' is a factor with the desired ordering
-    qst_df$loci_size <- factor(qst_df$loci_size, levels = c("1_loci", "10_loci", "100_loci", "1000_loci"))
-    # Convert island to a factor if it isn't already
-    qst_df$island <- as.factor(qst_df$island)
-    
-    # Replace negative Qst values with 0
-    qst_df_modified <- qst_df %>%
-      mutate(Qst = ifelse(Qst < 0, 0, Qst))
-    
-    # Create the box plot faceted by island with custom facet labels
-    box_plot <- ggplot(qst_df_modified, aes(x = loci_size, y = Qst, fill = loci_size)) +
-      geom_boxplot() +
-      facet_wrap(~ island, labeller = as_labeller(migration_labels)) +
-      labs(title = "Box Plot of Qst by Loci Size for each Migration Rate",
-           x = "Loci Size",
-           y = "Qst") +
-      theme_minimal() +
-      theme(legend.position = "none")
-    
-    # Save the box plot with a filename that includes the prefix
-    box_filename <- file.path(output_dir, paste0(prefix, "_box_plot_island.png"))
-    ggsave(filename = box_filename, plot = box_plot, width = 8, height = 6)
-    
-    # Create the density plot faceted by island
-    density_plot <- ggplot(qst_df_modified, aes(x = Qst, color = loci_size)) +
-      geom_density(size = 1) +
-      facet_wrap(~ island, labeller = as_labeller(migration_labels)) +
-      labs(title = "Density Plot of Qst by Loci Size for each Migration Rate",
-           x = "Qst",
-           y = "Density") +
-      theme_minimal()
-    
-    # Save the density plot with a filename that includes the prefix
-    density_filename <- file.path(output_dir, paste0(prefix, "_density_plot_island.png"))
-    ggsave(filename = density_filename, plot = density_plot, width = 8, height = 6)
-    
-    cat("Plots saved for", prefix, "\n")
+    # Read file
+    temp <- read.csv(file, nrows = 1)
+    num_cols <- ncol(temp)
+    df <- read.csv(file, colClasses = c("character", rep(NA, num_cols - 1)))
+    colnames(df) <- c("MR", "replicate", "loci_size", "QST")
+    temp_df[[filtering_type]][[effect_size]] <- df
   }
+  
+  # Get unique values of MR and loci_size
+  unique_MR <- unique(temp_df$maf$uni$MR)
+  unique_loci_size <- unique(temp_df$maf$uni$loci_size)
+  
+  # Loop over all unique MR and loci_size values
+  for (MR_value in unique_MR) {
+    for (loci_value in unique_loci_size) {
+      
+      # Define output paths
+      maf_plot_path <- file.path(output_dir, paste0("maf_plot_MR_", MR_value, "_loci_", loci_value, ".png"))
+      wo_plot_path <- file.path(output_dir, paste0("wo_plot_MR_", MR_value, "_loci_", loci_value, ".png"))
+      stats_path <- file.path(output_dir, paste0("stats_MR_", MR_value, "_loci_", loci_value, ".txt"))
+      
+      # Open text file for writing statistical results
+      sink(stats_path)
+      
+      # Extract data for "maf"
+      maf_inverse <- temp_df$maf$inverse[temp_df$maf$inverse$MR == MR_value & temp_df$maf$inverse$loci_size == loci_value, ]
+      maf_l <- temp_df$maf$l[temp_df$maf$l$MR == MR_value & temp_df$maf$l$loci_size == loci_value, ]
+      maf_linked <- temp_df$maf$linked[temp_df$maf$linked$MR == MR_value & temp_df$maf$linked$loci_size == loci_value, ]
+      maf_norm <- temp_df$maf$norm[temp_df$maf$norm$MR == MR_value & temp_df$maf$norm$loci_size == loci_value, ]
+      maf_uni <- temp_df$maf$uni[temp_df$maf$uni$MR == MR_value & temp_df$maf$uni$loci_size == loci_value, ]
+      
+      # Extract data for "wo"
+      wo_inverse <- temp_df$wo$inverse[temp_df$wo$inverse$MR == MR_value & temp_df$wo$inverse$loci_size == loci_value, ]
+      wo_l <- temp_df$wo$l[temp_df$wo$l$MR == MR_value & temp_df$wo$l$loci_size == loci_value, ]
+      wo_linked <- temp_df$wo$linked[temp_df$wo$linked$MR == MR_value & temp_df$wo$linked$loci_size == loci_value, ]
+      wo_norm <- temp_df$wo$norm[temp_df$wo$norm$MR == MR_value & temp_df$wo$norm$loci_size == loci_value, ]
+      wo_uni <- temp_df$wo$uni[temp_df$wo$uni$MR == MR_value & temp_df$wo$uni$loci_size == loci_value, ]
+      
+      # 📌 Compare maf only
+      qst_values_maf <- c(maf_inverse$QST, maf_l$QST, maf_linked$QST, maf_norm$QST, maf_uni$QST)
+      groups_maf <- rep(c("maf_inverse", "maf_l", "maf_linked", "maf_norm", "maf_uni"),
+                        c(nrow(maf_inverse), nrow(maf_l), nrow(maf_linked), nrow(maf_norm), nrow(maf_uni)))
+      
+      if (length(qst_values_maf) > 0) {
+        # Save maf boxplot
+        png(maf_plot_path, width = 800, height = 600)
+        boxplot(qst_values_maf ~ groups_maf, col = rainbow(5), 
+                main = paste("maf - MR =", MR_value, ", Loci Size =", loci_value),
+                ylab = "QST values", las = 1) 
+        dev.off()
+        
+        # Perform statistical tests for maf
+        anova_maf <- aov(qst_values_maf ~ groups_maf)
+        print(summary(anova_maf))
+        
+        # Tukey post-hoc test (if ANOVA is significant)
+        if (summary(anova_maf)[[1]][["Pr(>F)"]][1] < 0.05) {
+          print(TukeyHSD(anova_maf))
+        }
+        
+        # Kruskal-Wallis for maf
+        kw_maf <- kruskal.test(qst_values_maf ~ groups_maf)
+        print(kw_maf)
+        
+        # Pairwise Wilcoxon if Kruskal-Wallis is significant
+        if (kw_maf$p.value < 0.05) {
+          print(pairwise.wilcox.test(qst_values_maf, groups_maf, p.adjust.method = "bonferroni"))
+        }
+      }
+      
+      # 📌 Compare wo only
+      qst_values_wo <- c(wo_inverse$QST, wo_l$QST, wo_linked$QST, wo_norm$QST, wo_uni$QST)
+      groups_wo <- rep(c("wo_inverse", "wo_l", "wo_linked", "wo_norm", "wo_uni"),
+                       c(nrow(wo_inverse), nrow(wo_l), nrow(wo_linked), nrow(wo_norm), nrow(wo_uni)))
+      
+      if (length(qst_values_wo) > 0) {
+        # Save wo boxplot
+        png(wo_plot_path, width = 800, height = 600)
+        boxplot(qst_values_wo ~ groups_wo, col = rainbow(5), 
+                main = paste("wo - MR =", MR_value, ", Loci Size =", loci_value),
+                ylab = "QST values", las = 1)
+        dev.off()
+        
+        # Perform statistical tests for wo
+        anova_wo <- aov(qst_values_wo ~ groups_wo)
+        print(summary(anova_wo))
+        
+        # Tukey post-hoc test (if ANOVA is significant)
+        if (summary(anova_wo)[[1]][["Pr(>F)"]][1] < 0.05) {
+          print(TukeyHSD(anova_wo))
+        }
+        
+        # Kruskal-Wallis for wo
+        kw_wo <- kruskal.test(qst_values_wo ~ groups_wo)
+        print(kw_wo)
+        
+        # Pairwise Wilcoxon if Kruskal-Wallis is significant
+        if (kw_wo$p.value < 0.05) {
+          print(pairwise.wilcox.test(qst_values_wo, groups_wo, p.adjust.method = "bonferroni"))
+        }
+      }
+      
+      # Close text file output
+      sink()
+      
+    } # End of loci_size loop
+  } # End of MR loop
 }
 
-island_vizualization_fst <- function(directory){
-  # List CSV files matching *_Fst_island.csv in the specified directory
-  files <- list.files(directory, pattern = "_Fst_island\\.csv$", full.names = TRUE)
-  
-  # Create an output directory for the plots (e.g., "island_plot")
-  output_dir <- file.path(directory, "island_plot")
-  if(!dir.exists(output_dir)) {
-    dir.create(output_dir, recursive = TRUE)
-  }
-  
-  # Define a mapping for the island values to custom labels.
-  # Adjust keys and labels to your desired presentation.
-  island_labels <- c("001" = "Migration rate: 1%",
-                     "005" = "Migration rate: 5%",
-                     "008" = "Migration rate: 8%",
-                     "01"  = "Migration rate: 10%")
-  
-  # Iterate over each CSV file
-  for(file in files){
-    # Extract the prefix from the filename.
-    # E.g. "XX_maf_Fst_island.csv" -> "XX_maf"
-    prefix <- sub("_Fst_island\\.csv$", "", basename(file))
-    
-    # Read the CSV file. Force the first column (island) to character.
-    fst_df <- read.csv(file, stringsAsFactors = FALSE,
-                       colClasses = c("character", rep(NA, ncol(read.csv(file, nrows = 1))-1)))
-    
-    # Convert the island column to a factor with a specific order.
-    fst_df$island <- factor(fst_df$island, levels = c("005", "001", "008", "01"))
-    
-    # Set loci_size as an ordered factor
-    fst_df$loci_size <- factor(fst_df$loci_size, levels = c("1_loci", "10_loci", "100_loci", "1000_loci"))
-    
-    # Replace negative Fst values with 0
-    fst_df_modified <- fst_df %>%
-      mutate(Fst = ifelse(Fst < 0, 0, Fst))
-    
-    ## Faceted Plots ##
-    # Box plot faceted by island
-    box_plot <- ggplot(fst_df_modified, aes(x = loci_size, y = Fst, fill = loci_size)) +
-      geom_boxplot() +
-      facet_wrap(~ island, labeller = as_labeller(island_labels)) +
-      labs(title = "Box Plot of Fst by Loci Size for each Migration rate",
-           x = "Loci Size",
-           y = "Fst") +
-      theme_minimal() +
-      theme(legend.position = "none")
-    
-    box_filename <- file.path(output_dir, paste0(prefix, "_box_plot_island.png"))
-    ggsave(filename = box_filename, plot = box_plot, width = 8, height = 6)
-    
-    # Density plot faceted by island
-    density_plot <- ggplot(fst_df_modified, aes(x = Fst, color = loci_size)) +
-      geom_density(size = 1) +
-      facet_wrap(~ island, labeller = as_labeller(island_labels)) +
-      labs(title = "Density Plot of Fst by Loci Size for each Migration rate\n(Negatives set to 0)",
-           x = "Fst",
-           y = "Density") +
-      theme_minimal()
-    
-    density_filename <- file.path(output_dir, paste0(prefix, "_density_plot_island.png"))
-    ggsave(filename = density_filename, plot = density_plot, width = 8, height = 6)
-    
-    # Histogram faceted by island
-    histogram_plot <- ggplot(fst_df_modified, aes(x = Fst, fill = loci_size)) +
-      geom_histogram(bins = 30, alpha = 0.7, position = "dodge") +
-      facet_wrap(~ island, labeller = as_labeller(island_labels)) +
-      labs(title = "Histogram of Fst by Loci Size for each Migration rate\n(Negatives set to 0)",
-           x = "Fst",
-           y = "Count") +
-      theme_minimal()
-    
-    histogram_filename <- file.path(output_dir, paste0(prefix, "_histogram_plot_island.png"))
-    ggsave(filename = histogram_filename, plot = histogram_plot, width = 8, height = 6)
-    
-    ## Overall Comparison Plot by Loci Size ##
-    # Define comparisons for island groups (within each loci_size)
-    comparisons <- list(
-      c("005", "001"),
-      c("005", "008"),
-      c("005", "01"),
-      c("001", "008"),
-      c("001", "01"),
-      c("008", "01")
-    )
-    
-    overall_box_plot_by_loci <- ggplot(fst_df_modified, aes(x = island, y = Fst, fill = island)) +
-      geom_boxplot() +
-      facet_wrap(~ loci_size) +
-      # Kruskal-Wallis test annotation at the top left, smaller text size
-      stat_compare_means(
-        method = "kruskal.test",
-        label.x.npc = "right",
-        label.y = max(fst_df_modified$Fst, na.rm = TRUE) * 1.1,
-        size = 3  # Reduce text size for the KW test annotation
-      ) +
-      # Pairwise Wilcoxon comparisons
-      stat_compare_means(
-        comparisons = comparisons,
-        method = "wilcox.test",
-        step.increase = 0.1,  # or manually specify label.y values
-        size = 3
-      ) +
-      labs(
-        title = "Comparison of Fst by migration rate for each Loci Size",
-        subtitle = "Pairwise comparisons (Wilcoxon tests) shown per loci size",
-        x = "Island (Migration Rate)",
-        y = "Fst (Negatives set to 0)"
-      ) +
-      theme_minimal() +
-      theme(
-        legend.position = "none",
-        # Increase overall text sizes for better readability
-        plot.title = element_text(size = 18, face = "bold"),
-        plot.subtitle = element_text(size = 14),
-        axis.title = element_text(size = 14),
-        axis.text = element_text(size = 12)
-      )
-    
-    
-    
-    overall_box_filename_by_loci <- file.path(output_dir, paste0(prefix, "_overall_box_plot_by_loci.png"))
-    ggsave(filename = overall_box_filename_by_loci, plot = overall_box_plot_by_loci,
-           width = 17, height = 8, dpi = 300)
-    
-    cat("Plots saved for", prefix, "\n")
-  }
-}
 
-# Call the function using the directory containing your CSV files
-stepping_vizualization("./data/qst_result/stepping")
-island_vizualization("./data/qst_result/island")
 
-stepping_vizualization_fst("./data/fst_result/stepping")
-island_vizualization_fst("./data/fst_result/island")
+
+
+
+
+
+
+compare_qst_files("./data/qst_result/1_island", "stat_results/loci_distribution/1_island_between_loci_stat_result")
+compare_qst_files("./data/qst_result/1_stepping", "stat_results/loci_distribution/1_stepping_between_loci_stat_result")
+compare_qst_files("./data/qst_result/island", "stat_results/loci_distribution/island_between_loci_stat_result")
+compare_qst_files("./data/qst_result/stepping", "stat_results/loci_distribution/stepping_between_loci_stat_result")
+
+compare_qst_files_migration("./data/qst_result/1_island", "stat_results/migration/1_island_between_loci_stat_result")
+compare_qst_files_migration("./data/qst_result/island", "stat_results/migration/island_between_loci_stat_result")
+compare_qst_files_migration("./data/qst_result/1_stepping", "stat_results/migration/1_stepping_between_loci_stat_result")
+compare_qst_files_migration("./data/qst_result/stepping", "stat_results/migration/stepping_between_loci_stat_result")
+
+compare_qst_effect_size("./data/qst_result/1_island", "stat_results/effect_size/island")
+compare_qst_effect_size("./data/qst_result/1_stepping", "stat_results/effect_size/stepping")
+
